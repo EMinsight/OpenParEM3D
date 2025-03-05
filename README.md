@@ -7,4 +7,6 @@ A detailed document on the theory, methodology, and accuracy of OpenParEM3D is a
 
 See the project web site at https://openparem.org.
 
+Installation instructions are provided in the doc directory of the OpenParEMCommon project. Pre-compiled binaries are available for Ubuntu Linux along with source code for compiling from source for other flavors of Linux.
+
 OpenParEM2D is a free, open-source project licensed under GPLv3 or later.
