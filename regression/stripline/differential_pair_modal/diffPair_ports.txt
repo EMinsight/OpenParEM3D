@@ -1,7 +1,7 @@
 #OpenParEMports 1.0
 
 File
-   name=/home/briany/Desktop/OpenParEM3D_Sparam_experiment/regression/stripline/differential_pair_modal/diffPair.FCStd
+   name=/home/briany/Desktop/OpenParEM3D/regression/stripline/differential_pair_modal/diffPair.FCStd
 EndFile
 
 Path

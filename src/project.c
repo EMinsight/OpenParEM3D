@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -23,6 +23,8 @@
 
 #include "project.h"
 
+void prefix();
+
 // allocate memory and copy a string
 char* allocCopyString (char *a) {
    char *b=NULL;
@@ -34,6 +36,37 @@ char* allocCopyString (char *a) {
    strcpy(b,a);
 
    return b;
+}
+
+char* trimSpace (char *a) {
+   int i,j;
+
+   if (a == NULL) return NULL;
+
+   // leading
+
+   i=0;
+   while (i < strlen(a)) {
+      if (a[i] != ' ' && a[i] != '\t') break;
+      i++;
+   }
+
+   j=0;
+   while (i < strlen(a)) {
+      a[j]=a[i];
+      i++; j++;
+   }
+   a[j]='\0';
+
+   // trailing
+   i=j-1;
+   while (i >= 0) {
+      if (a[i] != ' ' && a[i] != '\t') break;
+      i--;
+   }
+   a[i+1]='\0';
+
+   return a;
 }
 
 char* removeNewLineChar (char *a) {
@@ -370,6 +403,143 @@ void add_inputFrequencyPlan (struct projectData *data, int type, double frequenc
    data->inputFrequencyPlansCount++;
 }
 
+int is_valid_quantity2 (char *a)
+{
+   if (a == NULL) return 0;
+   if (strcmp(a,"Etheta") == 0) return 1;
+   if (strcmp(a,"Ephi") == 0) return 1;
+   if (strcmp(a,"Htheta") == 0) return 1;
+   if (strcmp(a,"Hphi") == 0) return 1;
+   return 0;
+}
+
+int is_valid_quantity1 (char *a)
+{
+   if (a == NULL) return 0;
+   if (strcmp(a,"G") == 0) return 1;
+   if (strcmp(a,"D") == 0) return 1;
+   if (is_valid_quantity2(a)) return 1;
+   return 0;
+}
+
+int is_valid_plane (char *a)
+{
+   if (a == NULL) return 0;
+   if (strcmp(a,"xy") == 0) return 1;
+   if (strcmp(a,"xz") == 0) return 1;
+   if (strcmp(a,"yz") == 0) return 1;
+   return 0;
+}
+
+void add_antennaPattern (struct projectData *data, int lineNumber, int dim, char *quantity1, char *quantity2,
+                         char *plane, double theta, double phi, double latitude, double rotation)
+{
+   // allocate more patterns, if needed
+   if (data->inputAntennaPatternsCount == data->inputAntennaPatternsAllocated) {
+      data->inputAntennaPatternsAllocated+=5;
+      data->inputAntennaPatterns=(struct inputAntennaPattern *) realloc (data->inputAntennaPatterns,data->inputAntennaPatternsAllocated*sizeof(struct inputAntennaPattern));
+   }
+
+   // assign
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].lineNumber=lineNumber;
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].dim=dim;
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].quantity1=allocCopyString(quantity1);
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].quantity2=allocCopyString(quantity2);
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].plane=allocCopyString(plane);
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].theta=theta;
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].phi=phi;
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].latitude=latitude;
+   data->inputAntennaPatterns[data->inputAntennaPatternsCount].rotation=rotation;
+
+   // update slice variables, if necessary
+   if (is_valid_plane(plane)) {
+      if (strcmp(plane,"xy") == 0) {
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].theta=0;
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].phi=0;
+      }
+
+      if (strcmp(plane,"xz") == 0) {
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].theta=-90;
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].phi=-90;
+      }
+
+      if (strcmp(plane,"yz") == 0) {
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].theta=90;
+         data->inputAntennaPatterns[data->inputAntennaPatternsCount].phi=0;
+      }
+   }
+
+   data->inputAntennaPatternsCount++;
+}
+
+int check_antennaPatterns (struct projectData *projData, const char* indent)
+{
+   int fail=0;
+   int i,j,found,hasG,hasD;
+   int t1,t2,t3,t4,t5,t6,t7,t8,t9;
+
+   // nothing to check if there are no patterns
+   if (projData->inputAntennaPatternsCount == 0) return fail;
+
+   // must have a 3D G or D pattern
+   found=0;
+   i=0;
+   while (i < projData->inputAntennaPatternsCount) {
+      hasG=0; hasD=0;
+      if (projData->inputAntennaPatterns[i].quantity1 && strcmp(projData->inputAntennaPatterns[i].quantity1,"G") == 0) hasG=1;
+      if (projData->inputAntennaPatterns[i].quantity1 && strcmp(projData->inputAntennaPatterns[i].quantity1,"D") == 0) hasD=1;
+      if (projData->inputAntennaPatterns[i].dim == 3 && (hasG || hasD)) {found=1; break;}
+      i++;
+   }
+   if (!found) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3187: A 3D \"G\" or \"D\" antenna pattern must be specified with \"antenna.plot.3D.pattern G|D\".\n",indent,indent);
+      fail=1;
+   }
+
+   // check for duplicates
+   i=0;
+   while (i < projData->inputAntennaPatternsCount-1) {
+      j=i+1;
+      while (j < projData->inputAntennaPatternsCount) {
+         t1=0; t2=1; t3=1; t4=0; t5=0; t6=0; t7=0; t8=0; t9=0;
+         if (projData->inputAntennaPatterns[i].dim == projData->inputAntennaPatterns[j].dim) t1=1;
+         if (projData->inputAntennaPatterns[i].quantity1) {
+            if (projData->inputAntennaPatterns[j].quantity1) {
+               if (strcmp(projData->inputAntennaPatterns[i].quantity1,projData->inputAntennaPatterns[j].quantity1) == 0) t4=1;
+            } else t4=0;
+         } else {
+            if (projData->inputAntennaPatterns[j].quantity1) t4=0;
+            else t4=1;
+         }
+         if (projData->inputAntennaPatterns[i].quantity2) {
+            if (projData->inputAntennaPatterns[j].quantity2) {
+               if (strcmp(projData->inputAntennaPatterns[i].quantity2,projData->inputAntennaPatterns[j].quantity2) == 0) t5=1;
+            } else t5=0;
+         } else {
+            if (projData->inputAntennaPatterns[j].quantity2) t5=0;
+            else t5=1;
+         }
+         if (projData->inputAntennaPatterns[i].dim == 3) {t6=1; t7=1; t8=1; t9=1;}
+         else {
+            if (double_compare(projData->inputAntennaPatterns[i].theta,projData->inputAntennaPatterns[j].theta,1e-12)) t6=1;
+            if (double_compare(projData->inputAntennaPatterns[i].phi,projData->inputAntennaPatterns[j].phi,1e-12)) t7=1;
+            if (double_compare(projData->inputAntennaPatterns[i].latitude,projData->inputAntennaPatterns[j].latitude,1e-12)) t8=1;
+            if (double_compare(projData->inputAntennaPatterns[i].rotation,projData->inputAntennaPatterns[j].rotation,1e-12)) t9=1;
+         }
+         if (t1 && t2 && t3 && t4 && t5 && t6 && t7 && t8 & t9) {
+            prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3001: Antenna plot pattern at line %d duplicates that at line %d.\n",
+               indent,indent,projData->inputAntennaPatterns[j].lineNumber,projData->inputAntennaPatterns[i].lineNumber);
+            fail=1;
+         }
+             
+         j++;
+      }
+      i++;
+   }
+
+   return fail;
+}
+
 void init_project (struct projectData *data) {
 
    data->version_name=allocCopyString("#OpenParEM3Dproject");
@@ -426,6 +596,20 @@ void init_project (struct projectData *data) {
    data->solution_use_initial_guess=1;
    data->solution_shift_factor=1;
 
+   data->inputAntennaPatternsAllocated=5;
+   data->inputAntennaPatternsCount=0;
+   data->inputAntennaPatterns=(struct inputAntennaPattern *)malloc(data->inputAntennaPatternsAllocated*sizeof(struct inputAntennaPattern));
+   data->antenna_plot_current_resolution=0.1;
+   data->antenna_plot_2D_range=40;
+   data->antenna_plot_2D_interval=10;
+   data->antenna_plot_2D_resolution=1;
+   data->antenna_plot_2D_annotations=1;
+   data->antenna_plot_2D_save=1;
+   data->antenna_plot_3D_refinement=4;
+   data->antenna_plot_3D_sphere=0;
+   data->antenna_plot_3D_save=1;
+   data->antenna_plot_raw_save=0;
+
    data->output_show_refining_mesh=0;
    data->output_show_postprocessing=0;
    data->output_show_iterations=0;
@@ -444,6 +628,7 @@ void init_project (struct projectData *data) {
    data->debug_skip_mixed_conversion=0;
    data->debug_skip_forced_reciprocity=0;
    data->debug_tempfiles_keep=0;
+   data->debug_refine_preconditioner=1;
 
    data->field_points_count=0;
    data->field_points_allocated=0;
@@ -452,6 +637,7 @@ void init_project (struct projectData *data) {
    data->field_points_z=NULL;
 }
 
+//ToDo: Bring this up to date
 void free_project (struct projectData *data) {
    if (data == NULL) return;
 
@@ -471,6 +657,7 @@ void free_project (struct projectData *data) {
    if (data->solution_impedance_definition) free (data->solution_impedance_definition);
    if (data->solution_impedance_calculation) free (data->solution_impedance_calculation);
    if (data->inputFrequencyPlans) free(data->inputFrequencyPlans);
+   if (data->inputAntennaPatterns) free(data->inputAntennaPatterns);
    if (data->field_points_x) free(data->field_points_x);
    if (data->field_points_y) free(data->field_points_y);
    if (data->field_points_z) free(data->field_points_z);
@@ -483,7 +670,6 @@ void print_project (struct projectData *data, struct projectData *defaultData, c
    char* comment[2];
 
    if (data == NULL) return;
-
 
    logic[0]=allocCopyString("false");
    logic[1]=allocCopyString("true");
@@ -628,6 +814,58 @@ void print_project (struct projectData *data, struct projectData *defaultData, c
    matched=0; if (defaultData && double_compare(data->solution_shift_factor,defaultData->solution_shift_factor,1e-14)) matched=1;
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%ssolution.shift.factor %g\n",indent,comment[matched],data->solution_shift_factor);
 
+   // no default antenna patterns, so print all
+   i=0;
+   while (i < data->inputAntennaPatternsCount) {
+      if (data->inputAntennaPatterns[i].dim == 2) {
+         prefix();
+         if (data->inputAntennaPatterns[i].quantity1 == NULL) PetscPrintf(PETSC_COMM_WORLD,"%santenna.plot.2D.pattern NULL",indent);
+         else PetscPrintf(PETSC_COMM_WORLD,"%santenna.plot.2D.pattern %s",indent,data->inputAntennaPatterns[i].quantity1);
+         if (data->inputAntennaPatterns[i].quantity2 != NULL) PetscPrintf(PETSC_COMM_WORLD,",%s",data->inputAntennaPatterns[i].quantity2);
+         if (data->inputAntennaPatterns[i].plane != NULL) PetscPrintf(PETSC_COMM_WORLD,",%s",data->inputAntennaPatterns[i].plane);
+         else {PetscPrintf(PETSC_COMM_WORLD,",%g,%g",data->inputAntennaPatterns[i].theta,data->inputAntennaPatterns[i].phi);}
+         PetscPrintf(PETSC_COMM_WORLD,",%g",data->inputAntennaPatterns[i].latitude);
+         PetscPrintf(PETSC_COMM_WORLD,",%g",data->inputAntennaPatterns[i].rotation);
+         PetscPrintf(PETSC_COMM_WORLD,"\n");
+      } else {
+         prefix();
+         if (data->inputAntennaPatterns[i].quantity1 == NULL) PetscPrintf(PETSC_COMM_WORLD,"%santenna.plot.3D.pattern NULL",indent);
+         else PetscPrintf(PETSC_COMM_WORLD,"%santenna.plot.3D.pattern %s",indent,data->inputAntennaPatterns[i].quantity1);
+         PetscPrintf(PETSC_COMM_WORLD,"\n");
+      }
+      i++;
+   }
+
+   matched=0; if (defaultData && double_compare(data->antenna_plot_current_resolution,defaultData->antenna_plot_current_resolution,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.current.resolution %g\n",indent,comment[matched],data->antenna_plot_current_resolution);
+
+   matched=0; if (defaultData && double_compare(data->antenna_plot_2D_range,defaultData->antenna_plot_2D_range,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.2D.range %g\n",indent,comment[matched],data->antenna_plot_2D_range);
+
+   matched=0; if (defaultData && double_compare(data->antenna_plot_2D_resolution,defaultData->antenna_plot_2D_resolution,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.2D.resolution %g\n",indent,comment[matched],data->antenna_plot_2D_resolution);
+
+   matched=0;  if (defaultData && data->antenna_plot_2D_annotations == defaultData->antenna_plot_2D_annotations) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.2D.annotations %s\n",indent,comment[matched],logic[data->antenna_plot_2D_annotations]);
+
+   matched=0;  if (defaultData && data->antenna_plot_2D_save == defaultData->antenna_plot_2D_save) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.2D.save %s\n",indent,comment[matched],logic[data->antenna_plot_2D_save]);
+
+   matched=0; if (defaultData && double_compare(data->antenna_plot_3D_refinement,defaultData->antenna_plot_3D_refinement,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.3D.refinement %d\n",indent,comment[matched],data->antenna_plot_3D_refinement);
+
+   matched=0; if (defaultData && double_compare(data->antenna_plot_2D_interval,defaultData->antenna_plot_2D_interval,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.2D.interval %g\n",indent,comment[matched],data->antenna_plot_2D_interval);
+
+   matched=0;  if (defaultData && data->antenna_plot_3D_sphere == defaultData->antenna_plot_3D_sphere) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.3D.sphere %s\n",indent,comment[matched],logic[data->antenna_plot_3D_sphere]);
+
+   matched=0;  if (defaultData && data->antenna_plot_3D_save == defaultData->antenna_plot_3D_save) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.3D.save %s\n",indent,comment[matched],logic[data->antenna_plot_3D_save]);
+
+   matched=0;  if (defaultData && data->antenna_plot_raw_save == defaultData->antenna_plot_raw_save) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%santenna.plot.raw.save %s\n",indent,comment[matched],logic[data->antenna_plot_raw_save]);
+
    matched=0;  if (defaultData && data->output_show_refining_mesh == defaultData->output_show_refining_mesh) matched=1;
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%soutput.show.refining.mesh %s\n",indent,comment[matched],logic[data->output_show_refining_mesh]);
 
@@ -675,6 +913,9 @@ void print_project (struct projectData *data, struct projectData *defaultData, c
 
    matched=0;  if (defaultData && data->debug_tempfiles_keep == defaultData->debug_tempfiles_keep) matched=1;
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sdebug.tempfiles.keep %s\n",indent,comment[matched],logic[data->debug_tempfiles_keep]);
+
+   matched=0; if (defaultData && double_compare(data->debug_refine_preconditioner,defaultData->debug_refine_preconditioner,1e-14)) matched=1;
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sdebug.refine.preconditioner %d\n",indent,comment[matched],data->debug_refine_preconditioner);
 
    // no default field points, so print all
    i=0;
@@ -735,6 +976,137 @@ int has_refinementFrequencyPlan (struct projectData *data) {
    return 0;
 }
 
+void print_antenna_patterns (struct projectData *data, PetscMPIInt rank_)
+{
+   PetscMPIInt rank;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+   int i;
+
+   MPI_Barrier(PETSC_COMM_WORLD);
+   if (rank == rank_) {
+      i=0;
+      while (i < data->inputAntennaPatternsCount) {
+         printf ("inputAntennaPattern:\n");
+         printf ("   lineNumber=%d\n",data->inputAntennaPatterns[i].lineNumber);
+         printf ("   dim=%d\n",data->inputAntennaPatterns[i].dim);
+         printf ("   quantity1=%s\n",data->inputAntennaPatterns[i].quantity1);
+         printf ("   quantity2=%s\n",data->inputAntennaPatterns[i].quantity2);
+         printf ("   plane=%s\n",data->inputAntennaPatterns[i].plane);
+         printf ("   theta=%g\n",data->inputAntennaPatterns[i].theta);
+         printf ("   phi=%g\n",data->inputAntennaPatterns[i].phi);
+         printf ("   latitude=%g\n",data->inputAntennaPatterns[i].latitude);
+         printf ("   rotation=%g\n",data->inputAntennaPatterns[i].rotation);
+         i++;
+      }
+   }
+   MPI_Barrier(PETSC_COMM_WORLD);
+}
+
+// returns test within commas skipping commas within {}
+// 1st pair is given by index=1
+// allocates memory that must be freed elsewhere
+char* get_keywordValuePair (char *a, int index)
+{
+   int i,j,count,insideBrackets,copyText;
+   char *b;
+   if (a == NULL) return NULL;
+
+   b=allocCopyString(a);
+
+   copyText=0;
+   if (index == 1) copyText=1;
+
+   insideBrackets=0;
+   count=0;
+   j=0;
+   i=0;
+   while (i < strlen(a)) {
+      if (insideBrackets) {
+         if (a[i] == '{') {free(b); return NULL;}
+         if (a[i] == '}') insideBrackets=0;
+
+         if (a[i] != '{' && a[i] != '}' && copyText) {b[j]=a[i]; j++;}
+
+         if (i == strlen(a)-1 && insideBrackets) {free(b); return NULL;}
+      } else {
+         if (a[i] == ',') {
+            count++;
+            if (count == index && copyText) {b[j]='\0'; return b;}
+            if (i == strlen(a)-1 && copyText) {b[j+1]='\0'; return b;}
+            if (count == index-1) copyText=1;
+         } else {
+            if (a[i] != '{' && a[i] != '}' && copyText) {b[j]=a[i]; j++;}
+         }
+
+         if (a[i] == '{') insideBrackets=1;
+         if (a[i] == '}') {free(b); return NULL;}
+      }
+      i++;
+   }
+
+   if (copyText) b[j]='\0';
+   else {if (b) free(b); b=NULL;}
+
+   return b;
+}
+
+char* get_keyword (char *a)
+{
+   int i;
+   char *b;
+   b=allocCopyString(a);
+   i=0;
+   while (i < strlen(a)) {
+      if (a[i] == '=') {b[i]='\0'; break;}
+      b[i]=a[i];
+      i++;
+   }
+   return b;
+}
+
+char* get_value (char *a)
+{
+   int i,j;
+   char *b;
+   b=allocCopyString(a);
+
+   i=0;
+   while (i < strlen(a)) {
+      if (a[i] == '=') break;
+      i++;
+   }
+
+   i++;
+   j=0;
+   while (i < strlen(a)) {
+      b[j]=b[i];
+      j++;
+      i++;
+   }
+   b[j]='\0';
+
+   return b;
+}
+
+char* get_match_value (char *line, char *keyword)
+{
+   char *token=NULL,*value=NULL;
+   if (line == NULL) return NULL;
+   if (keyword == NULL) return NULL;
+
+   token=get_keyword(line);
+   token=trimSpace(token);
+
+   if (strcmp(token,keyword) == 0) {
+      value=get_value(line);
+      value=trimSpace(value);
+   }
+
+   if (token) {free(token); token=NULL;}
+
+   return value;
+}
+
 PetscErrorCode load_project_file (const char *filename, struct projectData *data, const char* indent) {
    PetscMPIInt size,rank;
    FILE *fp=NULL;
@@ -743,6 +1115,7 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
    size_t len=0;
    ssize_t line_size;
    char *keyword=NULL;
+   char *valueText=NULL;
    char *value=NULL;
    PetscErrorCode ierr=0;
    int lineCount=0;
@@ -764,6 +1137,17 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
    int planPointsPerDecade;
    int planRefine;
    int planLineNumber;
+   int patternCount;
+   char *quantity1=NULL;
+   char *quantity2=NULL;
+   char *plane=NULL;
+   double theta,phi,latitude,rotation;
+   char *tvalue,*ttheta,*tphi,*tlatitude,*trotation;
+   int loaded_plane,loaded_theta,loaded_phi;
+   int matched_keyword,index;
+   int lineNumber;
+   int dim;
+   int match;
 
    if (filename == NULL) return 1;
 
@@ -1375,6 +1759,424 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
                   } else print_invalid_entry (&ierr,lineCount,indent);
                }
 
+               else if (strcmp(keyword,"antenna.plot.2D.pattern") == 0) {
+
+                  ttheta=NULL; tphi=NULL; tlatitude=NULL; trotation=NULL;
+                  quantity1=NULL; quantity2=NULL; plane=NULL; theta=0; phi=0; latitude=0; rotation=0;
+                  loaded_plane=0; loaded_theta=0; loaded_phi=0;
+
+                  valueText=strtok(NULL,"\n");
+                  if (value) {free(value); value=NULL;}
+                  index=1;
+                  while (index) {
+                     matched_keyword=0;
+
+                     value=get_keywordValuePair(valueText,index);
+                     if (value == NULL) break;
+                     value=trimSpace(value);
+                     if (strcmp(value,"") == 0) break;
+
+                     tvalue=get_match_value(value,"q1");
+                     if (tvalue) {
+                        if (quantity1) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3207: Duplicated \"q1\" value at line %d.\n",indent,indent,lineCount);
+                        } else {quantity1=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"q2");
+                     if (tvalue) {
+                        if (quantity2) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3208: Duplicated \"q2\" value at line %d.\n",indent,indent,lineCount);
+                        } else {quantity2=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"plane");
+                     if (tvalue) {
+                        if (plane) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3209: Duplicated \"plane\" value at line %d.\n",indent,indent,lineCount);
+                        } else {plane=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"theta");
+                     if (tvalue) {
+                        if (ttheta) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3210: Duplicated \"theta\" value at line %d.\n",indent,indent,lineCount);
+                        } else {ttheta=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"phi");
+                     if (tvalue) {
+                        if (tphi) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3211: Duplicated \"phi\" value at line %d.\n",indent,indent,lineCount);
+                        } else {tphi=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"latitude");
+                     if (tvalue) {
+                        if (tlatitude) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3212: Duplicated \"latitude\" value at line %d.\n",indent,indent,lineCount);
+                        } else {tlatitude=tvalue; matched_keyword=1;}
+                     }
+
+                     tvalue=get_match_value(value,"rotation");
+                     if (tvalue) {
+                        if (trotation) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3213: Duplicated \"rotation\" value at line %d.\n",indent,indent,lineCount);
+                        } else {trotation=tvalue; matched_keyword=1;}
+                     }
+
+                     if (!matched_keyword) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3214: Unrecognized keyword/value pair \"%s\" at line %d.\n",indent,indent,value,lineCount);
+                     }
+
+                     if (value) {free(value); value=NULL;}
+                     index++;
+                  }
+
+                  if (!is_valid_quantity1(quantity1)) {
+                     ierr=1;
+                     prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3215: Invalid plot quantity \"q1\" at line %d.\n",indent,indent,lineCount);
+                  }
+
+                  if (quantity2 && !is_valid_quantity2(quantity2)) {
+                     ierr=1;
+                     prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3216: Invalid plot quantity \"q2\" at line %d.\n",indent,indent,lineCount);
+                  }
+
+                  if (plane) {
+                     if (is_valid_plane(plane)) loaded_plane=1;
+                     else {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3217: Invalid plane at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (ttheta) {
+                     if (is_double(ttheta)) {
+                        theta=atof(ttheta);
+                        if (abs(theta) > 180*(1+1e-12)) {
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3218: theta outside of valid [-180,180] range at line %d.\n",indent,indent,lineCount);
+                        } else loaded_theta=1;
+                     } else {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3219: Invalid theta at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (tphi) { 
+                     if (is_double(tphi)) {
+                        phi=atof(tphi); 
+                        if (abs(phi) > 180*(1+1e-12)) {
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3220: phi outside of valid [-180,180] range at line %d.\n",indent,indent,lineCount);
+                        } else loaded_phi=1;
+                     } else {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3221: Invalid phi at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (tlatitude) {  
+                     if (is_double(tlatitude)) {
+                        latitude=atof(tlatitude);    
+                        if (abs(latitude) > 90*(1+1e-12)) {
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3222: latitude outside of valid [-90,90] range at line %d.\n",indent,indent,lineCount);
+                        }
+                     } else {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3223: Invalid latitude at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (trotation) {
+                     if (is_double(trotation)) {
+                        rotation=atof(trotation);
+                        if (abs(rotation) > 360*(1+1e-12)) {
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3224: rotation outside of valid [-360,360] range at line %d.\n",indent,indent,lineCount);
+                        }
+                     } else {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3225: Invalid rotation at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (!ierr && quantity1 == NULL) {
+                     ierr=1;
+                     prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3226: Missing \'q1\' at line %d.\n",indent,indent,lineCount);
+                  }
+
+                  if (!ierr && quantity1 && quantity2) {
+                     if (strcmp(quantity1,quantity2) == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3227: Duplicated quantities at line %d.\n",indent,indent,lineCount);
+                     }
+
+                     if (strcmp(quantity1,"Ephi") == 0 && strcmp(quantity2,"Hphi") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3228: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Ephi") == 0 && strcmp(quantity2,"Htheta") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3229: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Etheta") == 0 && strcmp(quantity2,"Hphi") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3230: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Etheta") == 0 && strcmp(quantity2,"Htheta") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3231: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+
+                     if (strcmp(quantity1,"Hphi") == 0 && strcmp(quantity2,"Ephi") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3232: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Hphi") == 0 && strcmp(quantity2,"Etheta") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3233: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Htheta") == 0 && strcmp(quantity2,"Ephi") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3234: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"Htheta") == 0 && strcmp(quantity2,"Etheta") == 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3235: Mismatched field quantities at line %d.\n",indent,indent,lineCount);
+                     }
+
+                     if (strcmp(quantity1,"G") == 0 && quantity2) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3236: Quantity \"G\" cannot plot with a second quantity at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (strcmp(quantity1,"D") == 0 && quantity2) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3237: Quantity \"D\" cannot plot with a second quantity at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  if (!ierr) {
+                     if (!loaded_plane && !loaded_theta) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3238: Missing value for theta at line %d.\n",indent,indent,lineCount);
+                     }
+
+                     if (!loaded_plane && !loaded_phi) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3239: Missing value for phi at line %d.\n",indent,indent,lineCount);
+                     }
+                  }
+
+                  add_antennaPattern(data,lineCount,2,quantity1,quantity2,plane,theta,phi,latitude,rotation);
+
+                  if (quantity1) {free(quantity1); quantity1=NULL;}
+                  if (quantity2) {free(quantity2); quantity2=NULL;}
+                  if (plane) {free(plane); plane=NULL;}
+                  if (ttheta) {free(ttheta); ttheta=NULL;}
+                  if (tphi) {free(tphi); tphi=NULL;}
+                  if (tlatitude) {free(tlatitude); tlatitude=NULL;}
+                  if (trotation) {free(trotation); trotation=NULL;}
+               }
+
+               else if (strcmp(keyword,"antenna.plot.3D.pattern") == 0) {
+
+                  quantity1=NULL;
+
+                  valueText=strtok(NULL,"\n");
+                  if (value) {free(value); value=NULL;}
+                  index=1;
+                  while (index) {
+                     matched_keyword=0;
+
+                     value=get_keywordValuePair(valueText,index);
+                     if (value == NULL) break;
+                     value=trimSpace(value);
+                     if (strcmp(value,"") == 0) break;
+
+                     tvalue=get_match_value(value,"q");
+                     if (tvalue) {
+                        if (quantity1) {
+                           free(tvalue);
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3240: Duplicated \"q\" value at line %d.\n",indent,indent,lineCount);
+                        } else {quantity1=tvalue; matched_keyword=1;}
+                     }
+
+                     if (!matched_keyword) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3241: Unrecognized keyword/value pair \"%s\" at line %d.\n",indent,indent,value,lineCount);
+                     }
+
+                     if (value) {free(value); value=NULL;}
+                     index++;
+                  }
+
+                  if (!is_valid_quantity1(quantity1)) {
+                     ierr=1;
+                     prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3242: Invalid plot quantity \"q\" at line %d.\n",indent,indent,lineCount);
+                  }
+
+                  if (!ierr && quantity1 == NULL) {
+                     ierr=1;
+                     prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3003: Missing \'q1\' at line %d.\n",indent,indent,lineCount);
+                  }
+
+                  add_antennaPattern(data,lineCount,3,quantity1,NULL,NULL,0,0,0,0);
+                  if (quantity1) {free(quantity1); quantity1=NULL;}
+               }
+
+               else if (strcmp(keyword,"antenna.plot.current.resolution") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_double(value)) {
+                     data->antenna_plot_current_resolution=atof(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                     if (data->antenna_plot_current_resolution <= 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3199: Value must be > 0 at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (data->antenna_plot_current_resolution > 0.15) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3200: Value must be <= 0.15 at line %d.\n",indent,indent,lineCount);
+                     }
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.2D.range") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_double(value)) {
+                     data->antenna_plot_2D_range=atof(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                     if (data->antenna_plot_2D_range <= 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3201: Value must be > 0 at line %d.\n",indent,indent,lineCount);
+                     }
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.2D.resolution") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_double(value)) {
+                     data->antenna_plot_2D_resolution=atof(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                     if (data->antenna_plot_2D_resolution <= 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3202: Value must be > 0 deg at line %d.\n",indent,indent,lineCount);
+                     }
+                     if (data->antenna_plot_2D_resolution > 16*(1+1e-12)) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3203: Value must be <= 16 deg at line %d.\n",indent,indent,lineCount);
+                     }
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.2D.annotations") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_bool(value)) {
+                     data->antenna_plot_2D_annotations=get_bool(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.2D.save") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_bool(value)) {
+                     data->antenna_plot_2D_save=get_bool(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.3D.refinement") == 0) {
+                  value=strtok(NULL," ");
+                  match=0;
+                  if (is_text(value)) {
+                     if (strcmp(value,"verycoarse") == 0) {data->antenna_plot_3D_refinement=2; match=1;}
+                     if (strcmp(value,"coarse") == 0) {data->antenna_plot_3D_refinement=3; match=1;}
+                     if (strcmp(value,"medium") == 0) {data->antenna_plot_3D_refinement=4; match=1;}
+                     if (strcmp(value,"fine") == 0) {data->antenna_plot_3D_refinement=5; match=1;}
+                     if (strcmp(value,"veryfine") == 0) {data->antenna_plot_3D_refinement=6; match=1;}
+                  }
+                  if (match) {
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else {
+                     if (is_int(value)) {
+                        data->antenna_plot_3D_refinement=atoi(value);
+                        value=strtok(NULL," ");
+                        if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                        if (data->antenna_plot_3D_refinement < 2) {
+                           ierr=1;
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3206: Value must be >= 2 at line %d.\n",indent,indent,lineCount);
+                        }
+                        if (data->antenna_plot_3D_refinement > 5) {
+                           prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sWarning: Value line %d is large.\n",indent,indent,lineCount);
+                        }
+                     } else print_invalid_entry (&ierr,lineCount,indent);
+                  }
+               }
+
+               else if (strcmp(keyword,"antenna.plot.2D.interval") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_double(value)) {
+                     data->antenna_plot_2D_interval=atof(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                     if (data->antenna_plot_2D_interval <= 0) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3204: Value must be > 0 at line %d.\n",indent,indent,lineCount);
+                     }
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.3D.sphere") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_bool(value)) {
+                     data->antenna_plot_3D_sphere=get_bool(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.3D.save") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_bool(value)) {
+                     data->antenna_plot_3D_save=get_bool(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
+               else if (strcmp(keyword,"antenna.plot.raw.save") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_bool(value)) {
+                     data->antenna_plot_raw_save=get_bool(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
                else if (strcmp(keyword,"output.show.refining.mesh") == 0) {
                   value=strtok(NULL," ");
                   if (is_bool(value)) {
@@ -1519,6 +2321,19 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
                   } else print_invalid_entry (&ierr,lineCount,indent);
                }
 
+               else if (strcmp(keyword,"debug.refine.preconditioner") == 0) {
+                  value=strtok(NULL," ");
+                  if (is_int(value)) {
+                     data->debug_refine_preconditioner=atoi(value);
+                     value=strtok(NULL," ");
+                     if (is_text(value)) print_invalid_entry (&ierr,lineCount,indent);
+                     if (data->debug_refine_preconditioner != 0 && data->debug_refine_preconditioner != 1) {
+                        ierr=1;
+                        prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3205: Value must be 0 or 1 at line %d.\n",indent,indent,lineCount);
+                     }
+                  } else print_invalid_entry (&ierr,lineCount,indent);
+               }
+
                else if (strcmp(keyword,"field.point") == 0) {
                   if (commaCount == 2) {
                      value=strtok(NULL," ,");
@@ -1612,13 +2427,15 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
 
       }
 
+      if (check_antennaPatterns (data,indent)) ierr=1;
+
       if (data->refinement_iteration_max < data->refinement_iteration_min) {
          ierr=1;//
-         prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3172: The maximum iteration limit of %d must be >= to the minimum iteration limit of %d",indent,indent,data->refinement_iteration_max,data->refinement_iteration_min);
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3172: The maximum iteration limit of %d must be >= to the minimum iteration limit of %d",
+                                                 indent,indent,data->refinement_iteration_max,data->refinement_iteration_min);
          if (lineIterationMax >= 0) {prefix(); PetscPrintf(PETSC_COMM_WORLD," at line %d.\n",lineIterationMax);}
          else {prefix(); PetscPrintf(PETSC_COMM_WORLD,".\n");}
       }
-
    }
 
    // stop if an ierr is found so far
@@ -1626,7 +2443,7 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
    if (rank == 0) failedLoad=ierr;
    ierr=MPI_Bcast (&failedLoad,1,MPI_INT,0,PETSC_COMM_WORLD);
    if (failedLoad) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3187: Failed to load project.\n",indent,indent);
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3000: Failed to load project.\n",indent,indent);
       return 1;
    }
 
@@ -1690,7 +2507,6 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
          ierr=MPI_Send(&(data->refinement_absolute_tolerance),1,MPI_DOUBLE,i,1000084,PETSC_COMM_WORLD);
 
          ierr=MPI_Send(&(data->inputFrequencyPlansCount),1,MPI_UNSIGNED_LONG,i,1000032,PETSC_COMM_WORLD);
-
          j=0;
          while (j < data->inputFrequencyPlansCount) {
             ierr=MPI_Send(&(data->inputFrequencyPlans[j].type),1,MPI_INT,i,1000033,PETSC_COMM_WORLD);
@@ -1736,6 +2552,47 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
          ierr=MPI_Send(&(data->solution_use_initial_guess),1,MPI_INT,i,1000061,PETSC_COMM_WORLD);
          ierr=MPI_Send(&(data->solution_shift_factor),1,MPI_DOUBLE,i,1000062,PETSC_COMM_WORLD);
 
+         ierr=MPI_Send(&(data->inputAntennaPatternsCount),1,MPI_INT,i,1000099,PETSC_COMM_WORLD);
+         j=0;
+         while (j < data->inputAntennaPatternsCount) {
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].lineNumber),1,MPI_INT,i,1000109,PETSC_COMM_WORLD);
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].dim),1,MPI_INT,i,1000088,PETSC_COMM_WORLD);
+
+            length=0;
+            if (data->inputAntennaPatterns[j].quantity1 != NULL) length=strlen(data->inputAntennaPatterns[j].quantity1);
+            ierr=MPI_Send (&length,1,MPI_INT,i,1000091,PETSC_COMM_WORLD);
+            if (length > 0) ierr=MPI_Send(data->inputAntennaPatterns[j].quantity1,length,MPI_CHAR,i,1000092,PETSC_COMM_WORLD);
+
+            length=0;
+            if (data->inputAntennaPatterns[j].quantity2 != NULL) length=strlen(data->inputAntennaPatterns[j].quantity2);
+            ierr=MPI_Send (&length,1,MPI_INT,i,1000093,PETSC_COMM_WORLD);
+            if (length > 0) ierr=MPI_Send(data->inputAntennaPatterns[j].quantity2,length,MPI_CHAR,i,1000094,PETSC_COMM_WORLD);
+
+            length=0;
+            if (data->inputAntennaPatterns[j].plane != NULL) length=strlen(data->inputAntennaPatterns[j].plane);
+            ierr=MPI_Send (&length,1,MPI_INT,i,1000097,PETSC_COMM_WORLD);
+            if (length > 0) ierr=MPI_Send(data->inputAntennaPatterns[j].plane,length,MPI_CHAR,i,1000098,PETSC_COMM_WORLD);
+
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].theta),1,MPI_DOUBLE,i,1000111,PETSC_COMM_WORLD);
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].phi),1,MPI_DOUBLE,i,1000112,PETSC_COMM_WORLD);
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].latitude),1,MPI_DOUBLE,i,1000113,PETSC_COMM_WORLD);
+            ierr=MPI_Send(&(data->inputAntennaPatterns[j].rotation),1,MPI_DOUBLE,i,1000114,PETSC_COMM_WORLD);
+
+            j++;
+         }
+
+         ierr=MPI_Send(&(data->antenna_plot_current_resolution),1,MPI_DOUBLE,i,1000100,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_2D_range),1,MPI_DOUBLE,i,1000101,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_2D_interval),1,MPI_DOUBLE,i,1000102,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_2D_resolution),1,MPI_DOUBLE,i,1000103,PETSC_COMM_WORLD);
+
+         ierr=MPI_Send(&(data->antenna_plot_2D_annotations),1,MPI_INT,i,1000104,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_2D_save),1,MPI_INT,i,1000105,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_3D_refinement),1,MPI_INT,i,1000106,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_3D_sphere),1,MPI_INT,i,1000107,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_3D_save),1,MPI_INT,i,1000108,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->antenna_plot_raw_save),1,MPI_INT,i,1000096,PETSC_COMM_WORLD);
+
          ierr=MPI_Send(&(data->output_show_refining_mesh),1,MPI_INT,i,1000063,PETSC_COMM_WORLD);
          ierr=MPI_Send(&(data->output_show_postprocessing),1,MPI_INT,i,1000064,PETSC_COMM_WORLD);
          ierr=MPI_Send(&(data->output_show_iterations),1,MPI_INT,i,1000065,PETSC_COMM_WORLD);
@@ -1754,6 +2611,7 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
          ierr=MPI_Send(&(data->debug_skip_mixed_conversion),1,MPI_INT,i,1000085,PETSC_COMM_WORLD);
          ierr=MPI_Send(&(data->debug_skip_forced_reciprocity),1,MPI_INT,i,1000086,PETSC_COMM_WORLD);
          ierr=MPI_Send(&(data->debug_tempfiles_keep),1,MPI_INT,i,1000076,PETSC_COMM_WORLD);
+         ierr=MPI_Send(&(data->debug_refine_preconditioner),1,MPI_INT,i,1000110,PETSC_COMM_WORLD);
 
          ierr=MPI_Send(&(data->field_points_count),1,MPI_INT,i,1000077,PETSC_COMM_WORLD);
          ierr=MPI_Send(data->field_points_x,data->field_points_count,MPI_DOUBLE,i,1000078,PETSC_COMM_WORLD);
@@ -1841,7 +2699,6 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
       ierr=MPI_Recv(&(data->refinement_absolute_tolerance),1,MPI_DOUBLE,0,1000084,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
 
       ierr=MPI_Recv(&planCount,1,MPI_UNSIGNED_LONG,0,1000032,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
-
       j=0;
       while (j < planCount) {
          ierr=MPI_Recv(&planType,1,MPI_INT,0,1000033,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
@@ -1898,6 +2755,58 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
       ierr=MPI_Recv(&(data->solution_use_initial_guess),1,MPI_INT,0,1000061,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       ierr=MPI_Recv(&(data->solution_shift_factor),1,MPI_DOUBLE,0,1000062,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
 
+      ierr=MPI_Recv(&patternCount,1,MPI_INT,0,1000099,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      j=0;
+      while (j < patternCount) {
+         ierr=MPI_Recv(&lineNumber,1,MPI_INT,0,1000109,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         ierr=MPI_Recv(&dim,1,MPI_INT,0,1000088,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+         quantity1=NULL;
+         ierr=MPI_Recv(&length,1,MPI_INT,0,1000091,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         if (length > 0) {
+            quantity1=(char *) malloc((length+1)*sizeof(char));
+            ierr=MPI_Recv(quantity1,length,MPI_CHAR,0,1000092,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+            quantity1[length]='\0';
+         }
+
+         quantity2=NULL;
+         ierr=MPI_Recv(&length,1,MPI_INT,0,1000093,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         if (length > 0) {
+            quantity2=(char *) malloc((length+1)*sizeof(char));
+            ierr=MPI_Recv(quantity2,length,MPI_CHAR,0,1000094,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+            quantity2[length]='\0';
+         }
+
+         plane=NULL;
+         ierr=MPI_Recv(&length,1,MPI_INT,0,1000097,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         if (length > 0) {
+            plane=(char *) malloc((length+1)*sizeof(char));
+            ierr=MPI_Recv(plane,length,MPI_CHAR,0,1000098,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+            plane[length]='\0';
+         }
+
+         ierr=MPI_Recv(&theta,1,MPI_DOUBLE,0,1000111,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         ierr=MPI_Recv(&phi,1,MPI_DOUBLE,0,1000112,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         ierr=MPI_Recv(&latitude,1,MPI_DOUBLE,0,1000113,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         ierr=MPI_Recv(&rotation,1,MPI_DOUBLE,0,1000114,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+         add_antennaPattern(data,lineNumber,dim,quantity1,quantity2,plane,theta,phi,latitude,rotation);
+
+         j++;
+      }
+
+      ierr=MPI_Recv(&(data->antenna_plot_current_resolution),1,MPI_DOUBLE,0,1000100,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_2D_range),1,MPI_DOUBLE,0,1000101,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_2D_interval),1,MPI_DOUBLE,0,1000102,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_2D_resolution),1,MPI_DOUBLE,0,1000103,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+      ierr=MPI_Recv(&(data->antenna_plot_2D_annotations),1,MPI_INT,0,1000104,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_2D_save),1,MPI_INT,0,1000105,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_3D_refinement),1,MPI_INT,0,1000106,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_3D_sphere),1,MPI_INT,0,1000107,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_3D_save),1,MPI_INT,0,1000108,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->antenna_plot_raw_save),1,MPI_INT,0,1000096,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
       ierr=MPI_Recv(&(data->output_show_refining_mesh),1,MPI_INT,0,1000063,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       ierr=MPI_Recv(&(data->output_show_postprocessing),1,MPI_INT,0,1000064,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       ierr=MPI_Recv(&(data->output_show_iterations),1,MPI_INT,0,1000065,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
@@ -1916,6 +2825,7 @@ PetscErrorCode load_project_file (const char *filename, struct projectData *data
       ierr=MPI_Recv(&(data->debug_skip_mixed_conversion),1,MPI_INT,0,1000085,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       ierr=MPI_Recv(&(data->debug_skip_forced_reciprocity),1,MPI_INT,0,1000086,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       ierr=MPI_Recv(&(data->debug_tempfiles_keep),1,MPI_INT,0,1000076,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      ierr=MPI_Recv(&(data->debug_refine_preconditioner),1,MPI_INT,0,1000110,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
 
       ierr=MPI_Recv(&(data->field_points_count),1,MPI_INT,0,1000077,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
       data->field_points_allocated=data->field_points_count;

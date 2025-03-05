@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -60,10 +60,12 @@ class Result
       double maxAbsoluteError;             //                     absolute error in the Hfield across the mesh in current iteration
       bool isRefined=false;                //                     indicates that this is part of an iterative solution (although it may only have the first iteration)
       bool isConverged=false;              //                     indicates if the iterative solution converged
+      bool hasRadiation=false;             // indicates if radiation patterns are calculated
       double solve_time=0;
       double fem_setup_time=0;
       double mesh_error_time=0;
       double refine_time=0;
+      double radiation_time=0;
       double magLimitdB=-150;              // breakover point for "equal" vs. "lessthan" comparisons for results
       double equalMagLimit=1e-12;
       double argLimitdeg=0.1;
@@ -86,6 +88,7 @@ class Result
       void set_maxAbsoluteError (double maxAbsoluteError_) {maxAbsoluteError=maxAbsoluteError_;}
       void set_isRefined () {isRefined=true;}
       void set_isConverged (bool isConverged_) {isConverged=isConverged_;}
+      void set_hasRadiation (bool hasRadiation_) {hasRadiation=hasRadiation_;}
       int get_iteration() {return iteration;}
       void push_Zo (complex<double> Zo_) {Zo.push_back(Zo_);}
       double get_maxAbsoluteError () {return maxAbsoluteError;}
@@ -99,19 +102,22 @@ class Result
       bool is_type_Z () {if (type.compare("Z") == 0) return true; return false;}
       bool extractS (string, string, int);
       void save (ostream *, struct projectData *, int);
-      void saveFormatted (ostream *, double, double, double, double, double *);
+      void saveFormatted (ostream *, double, double, double, double, double, double *);
       void saveCSV (ostream *, struct projectData *, double);
       void save_result_component (ofstream *, const char *, int, int *, const char *, long unsigned int);
       bool get_isRefined () {return isRefined;}
       bool get_isConverged () {return isConverged;}
+      bool get_hasRadiation () {return hasRadiation;}
       double get_solve_time () {return solve_time;}
       double get_fem_setup_time () {return fem_setup_time;}
       double get_refine_time () {return refine_time;}
       double get_mesh_error_time () {return mesh_error_time;}
+      double get_radiation_time () {return radiation_time;}
       void set_solve_time (double t) {solve_time+=t;}
       void set_fem_setup_time (double t) {fem_setup_time+=t;}
       void set_refine_time (double t) {refine_time+=t;}
       void set_mesh_error_time (double t) {mesh_error_time+=t;}
+      void set_radiation_time (double t) {radiation_time+=t;}
       PetscErrorCode forceReciprocal();
       PetscErrorCode get_k (bool, complex<double>, Mat *);
       PetscErrorCode S2Z ();
@@ -136,6 +142,7 @@ class ResultDatabase
       void push(Result *);
       Result* get_Result (double, int);
       Result* get_Result (double);
+      vector<double>* get_unique_frequencies () {return &unique_frequencies;}
       int get_SportCount () {return SportCount;}
       double calculate_maxRelativeError (struct projectData *, double, int);
       double calculate_maxAbsoluteError (struct projectData *, double, int);
@@ -147,15 +154,17 @@ class ResultDatabase
       bool saveCSV (struct projectData *, BoundaryDatabase *, vector<DifferentialPair *> *, bool);
       bool saveTouchstone (struct projectData *, BoundaryDatabase *, vector<DifferentialPair *> *);
       void set_refine_time (double, double, int);
+      void set_radiation_time (double, double, int);
       bool hasRefinement ();
       bool isAllConverged ();
       bool isSequentialConverged (struct projectData *, double);
+      bool get_hasRadiation ();
       void set_solve_time (double t) {solve_time=t;}
       double get_solve_time () {return solve_time;}
       int get_lastIteration (double);
       bool SparameterConversion (int, double, BoundaryDatabase *, lapack_complex_double *, lapack_complex_double*);
       void print();
-      bool save_as_test(struct projectData *);
+      bool save_as_test (string, struct projectData *, int *);
       bool loadCSV (const char *);
 };
 

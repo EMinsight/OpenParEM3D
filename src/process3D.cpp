@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////////
 //                                                                               //
 //    process3D - processor for automation of regression testing of OpenParEM3D  //
-//    Copyright (C) 2024 Brian Young                                             //
+//    Copyright (C) 2025 Brian Young                                             //
 //                                                                               //
 //    This program is free software: you can redistribute it and/or modify       //
 //    it under the terms of the GNU General Public License as published by       //
@@ -33,10 +33,16 @@ void printERROR2 (int lineNumber)
    cout << "|ERROR3121: " << processingFileName << ": " << routine << ": Incorrect number of entries at line " << lineNumber << "." << endl;
 }
 
-bool is_valid_testVariable (string test)
+bool is_valid_testVariable (string test, bool type)
 {
-   if (test.compare("magS(dB)") == 0) return true;
-   if (test.compare("argS(deg)") == 0) return true;
+   if (type) {
+      if (test.compare("gain") == 0) return true;
+      if (test.compare("directivity") == 0) return true;
+      if (test.compare("radiationEfficiency") == 0) return true;
+   } else {
+      if (test.compare("magS(dB)") == 0) return true;
+      if (test.compare("argS(deg)") == 0) return true;
+   }
    return false;
 }
 
@@ -57,7 +63,7 @@ void TestCase::print_as_testcase ()
    cout << name << ",";
    cout << setprecision(15) << frequency << ",";
    cout << testVariable << ",";
-   cout << portOut << ",";
+   if (!type) cout << portOut << ",";
    cout << portIn << ",";
    cout << testFunction << ",";
    if (testFunction.compare("equal") == 0) {
@@ -77,7 +83,7 @@ void TestCase::printAllFormatted ()
    cout << "name=" << name << endl;
    cout << "   frequency=" << frequency << endl;
    cout << "   testVariable=" << testVariable << endl;
-   cout << "   portOut=" << portOut << endl;
+   if (!type) cout << "   portOut=" << portOut << endl;
    cout << "   portIn=" << portIn << endl;
    cout << "   testFunction=" << testFunction << endl;
    cout << "   foundValue=" << foundValue << endl;
@@ -96,7 +102,7 @@ void TestCase::printAllFormatted ()
    cout << "   evaluated=" << evaluated << endl;
 }
 
-void TestCase::evaluate (ResultDatabase *testResultDatabase)
+void TestCase::evaluate (ResultDatabase *testResultDatabase, PatternDatabase *testPatternDatabase)
 {
    double error1,error2,error3;
 
@@ -151,6 +157,63 @@ void TestCase::evaluate (ResultDatabase *testResultDatabase)
       }
    }
 
+   Pattern *pattern=testPatternDatabase->get_Pattern(frequency,portIn);
+   if (pattern) {
+      if (testVariable.compare("gain") == 0) {
+         foundValue=pattern->get_gain();
+
+         if (testFunction.compare("equal") == 0) {
+            if (expectedValue == 0) error=abs(foundValue);
+            else error=abs((foundValue-expectedValue)/expectedValue);
+            if (error <= tolerance) passed=true;
+         }
+
+         if (testFunction.compare("lessthan") == 0) {
+            if (foundValue <= threshold) passed=true;
+         }
+
+         if (testFunction.compare("greaterthan") == 0) {
+            if (foundValue >= threshold) passed=true;
+         }
+      }
+
+      if (testVariable.compare("directivity") == 0) {
+         foundValue=pattern->get_directivity();
+
+         if (testFunction.compare("equal") == 0) {
+            if (expectedValue == 0) error=abs(foundValue);
+            else error=abs((foundValue-expectedValue)/expectedValue);
+            if (error <= tolerance) passed=true;
+         }
+
+         if (testFunction.compare("lessthan") == 0) {
+            if (foundValue <= threshold) passed=true;
+         }
+
+         if (testFunction.compare("greaterthan") == 0) {
+            if (foundValue >= threshold) passed=true;
+         }
+      }
+
+      if (testVariable.compare("radiationEfficiency") == 0) {
+         foundValue=pattern->get_radiationEfficiency();
+
+         if (testFunction.compare("equal") == 0) {
+            if (expectedValue == 0) error=abs(foundValue);
+            else error=abs((foundValue-expectedValue)/expectedValue);
+            if (error <= tolerance) passed=true;
+         }
+
+         if (testFunction.compare("lessthan") == 0) {
+            if (foundValue <= threshold) passed=true;
+         }
+
+         if (testFunction.compare("greaterthan") == 0) {
+            if (foundValue >= threshold) passed=true;
+         }
+      }
+   }
+
    evaluated=true;
 }
 
@@ -169,7 +232,7 @@ void TestCase::show_evaluation(ostream *out)
       if (passed) *out << "pass" << ",";
       else *out << "FAIL" << ",";
       *out << setprecision(15) << frequency << ",";
-      *out << portOut << ",";
+      if (!type) *out << portOut << ",";
       *out << portIn << ",";
       *out << testVariable << ",";
       *out << testFunction << ",";
@@ -194,6 +257,7 @@ void TestCase::show_evaluation(ostream *out)
 bool TestCaseDatabase::load (const char *filename)
 {
    bool fail=false;
+   bool type=false;
    int lineNumber=0;
    string line;
    ifstream inFile;
@@ -210,6 +274,10 @@ bool TestCaseDatabase::load (const char *filename)
          // skip blank lines
          if (line.compare("") != 0) {
 
+            // determine the type: S-parameters or antenna metrics
+            if (line.compare("# ResultDatabase::save_as_test") == 0) type=false;  // S-parameters
+            if (line.compare("# PatternDatabase::save_as_test") == 0) type=true;  // antenna metrics
+
             // skip comment lines
             if (! is_hashComment(line)) {
 
@@ -217,6 +285,7 @@ bool TestCaseDatabase::load (const char *filename)
                line=line.substr(0,line.find("//",0));
 
                TestCase *testCase=new TestCase;
+               testCase->set_type(type);
 
                // parse csv
                stringstream sstream(line);
@@ -229,11 +298,15 @@ bool TestCaseDatabase::load (const char *filename)
                      if (is_double(&entry)) testCase->set_frequency(atof(entry.c_str()));
                      else {printERROR(lineNumber,count+1); fail=true;}
                   } else if (count == 2) {
-                     if (is_valid_testVariable(entry)) testCase->set_testVariable(entry);
+                     if (is_valid_testVariable(entry,type)) testCase->set_testVariable(entry);
                      else {printERROR(lineNumber,count+1); fail=true;}
                   } else if (count == 3) {
-                     if (is_int(&entry)) testCase->set_portOut(stoi(entry));
-                     else {printERROR(lineNumber,count+1); fail=true;}
+                     if (is_int(&entry)) {
+                        if (type) {
+                           testCase->set_portIn(stoi(entry));
+                           count++;
+                        } else testCase->set_portOut(stoi(entry));
+                     } else {printERROR(lineNumber,count+1); fail=true;}
                   } else if (count == 4) {
                      if (is_int(&entry)) testCase->set_portIn(stoi(entry));
                      else {printERROR(lineNumber,count+1); fail=true;}
@@ -286,11 +359,11 @@ bool TestCaseDatabase::load (const char *filename)
    return fail;
 }
 
-void TestCaseDatabase::evaluate (ResultDatabase *testResultDatabase)
+void TestCaseDatabase::evaluate (ResultDatabase *testResultDatabase, PatternDatabase *testPatternDatabase)
 {
    long unsigned int i=0;
    while (i < testCaseList.size()) {
-      testCaseList[i]->evaluate(testResultDatabase);
+      testCaseList[i]->evaluate(testResultDatabase,testPatternDatabase);
       i++;
    }
 }
@@ -382,14 +455,17 @@ void exit_on_fail(string filename)
    exit(1);
 }
 
+// usage: process3D projectFile testCaseFile SresultsFile [FFresultsFile]
+// FFresultsFile only applies for antenna problems
 int main (int argc, char *argv[])
 {
    struct projectData projData;
    TestCaseDatabase testCaseDatabase;
-   ResultDatabase testResultDatabase;  // does not use all data elements
+   ResultDatabase testResultDatabase;    // S-parameters;    does not use all data elements
+   PatternDatabase testPatternDatabase;  // antenna metrics; does not use all data elements
    PetscMPIInt size,rank;
 
-   if (argc != 4) {
+   if (argc != 4 && argc != 5) {
       char buf[1024];
       if (getcwd(buf,1024) == NULL) cout << "ASSERT: buffer overflow in main." << endl;
       cout << buf << ",FAIL,-1,-1,-1" << endl;
@@ -421,18 +497,26 @@ int main (int argc, char *argv[])
      std::filesystem::remove_all(testResultsFile.c_str());
    }
 
-   // define some file names
+   // load test cases
    string testCasesFile=argv[2];
-   string simResultsFile=argv[3];
-
    if (testCaseDatabase.load (testCasesFile.c_str())) exit_on_fail(testResultsFile);
    //testCaseDatabase.print_as_testcase();
 
-   if (testResultDatabase.loadCSV(simResultsFile.c_str())) exit_on_fail(testResultsFile);
+   // load S-parameters
+   string SresultsFile=argv[3];
+   if (testResultDatabase.loadCSV(SresultsFile.c_str())) exit_on_fail(testResultsFile);
 
-   testCaseDatabase.evaluate(&testResultDatabase);
+   // load antenna metrics
+   string FFresultsFile="";
+   if (argc == 5) {
+      string FFresultsFile=argv[4];
+      testPatternDatabase.loadCSV(FFresultsFile.c_str(),&projData);
+      //testPatternDatabase.print(0);
+   }
+
+   // process test cases
+   testCaseDatabase.evaluate(&testResultDatabase,&testPatternDatabase);
    if (projData.test_show_detailed_cases) testCaseDatabase.printAllFormatted();
-
    testCaseDatabase.sort(true);
 
    ofstream out;
@@ -445,7 +529,8 @@ int main (int argc, char *argv[])
       exit_on_fail(testResultsFile);
    }
 
-   PetscFinalize();
+   //ToDo: fix the MPI error when this is un-commented
+   //PetscFinalize();
 
    return 0;
 }

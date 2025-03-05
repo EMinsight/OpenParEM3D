@@ -22,13 +22,16 @@ CLIBS=-lHYPRE -lm
 csr.o: csr.c csr.h
 	$(CC) $(CFLAGS) -c csr.c $(CINCS)
 
-fem3D.o: fem3D.cpp fem3D.hpp project.h port.hpp OPEM_L2ZZErrorEstimator.hpp
+pattern.o: pattern.cpp pattern.hpp project.h
+	$(CCxx) $(CxxFLAGS) -c pattern.cpp $(CxxINCS)
+
+fem3D.o: fem3D.cpp fem3D.hpp project.h port.hpp OPEM_L2ZZErrorEstimator.hpp pattern.hpp pattern.cpp
 	$(CCxx) $(CxxFLAGS) -c fem3D.cpp $(CxxINCS)
 
 OpenParEM3D.o: OpenParEM3D.cpp fem3D.hpp port.hpp project.h results.hpp
 	$(CCxx) $(CxxFLAGS) -c OpenParEM3D.cpp $(CxxINCS)
 
-port.o: port.cpp port.hpp project.h
+port.o: port.cpp port.hpp pattern.hpp pattern.cpp project.h 
 	$(CCxx) $(CxxFLAGS) -c port.cpp $(CxxINCS)
 
 process3D.o: process3D.cpp process3D.hpp project.h results.hpp
@@ -49,14 +52,14 @@ tline3.o: tline3.cpp
 solveComplexLinearSystem.o: solveComplexLinearSystem.c solveComplexLinearSystem.h project.h
 	$(CC) $(CFLAGS) -c solveComplexLinearSystem.c $(CINCS)
 
-process3D: process3D.o csr.o solveComplexLinearSystem.o port.o fem3D.o project.o results.o OPEM_L2ZZErrorEstimator.o
-	$(CCxx) $(CxxFLAGS) csr.o solveComplexLinearSystem.o port.o OPEM_L2ZZErrorEstimator.o fem3D.o process3D.o project.o results.o -o process3D $(CxxLDIR) $(CxxLIBS)
+process3D: process3D.o csr.o solveComplexLinearSystem.o port.o fem3D.o project.o results.o OPEM_L2ZZErrorEstimator.o pattern.o
+	$(CCxx) $(CxxFLAGS) csr.o solveComplexLinearSystem.o port.o OPEM_L2ZZErrorEstimator.o fem3D.o process3D.o project.o results.o pattern.o -o process3D $(CxxLDIR) $(CxxLIBS)
 
 simplify3D.o: simplify3D.cpp simplify3D.hpp project.h
 	$(CCxx) $(CxxFLAGS) -c simplify3D.cpp $(CxxINCS)
 
-OpenParEM3D: OpenParEM3D.o csr.o solveComplexLinearSystem.o port.o fem3D.o project.o results.o OPEM_L2ZZErrorEstimator.o
-	$(CCxx) $(CxxFLAGS) csr.o solveComplexLinearSystem.o OpenParEM3D.o port.o OPEM_L2ZZErrorEstimator.o fem3D.o project.o results.o -o OpenParEM3D $(CxxLDIR) $(CxxLIBS)
+OpenParEM3D: OpenParEM3D.o csr.o solveComplexLinearSystem.o port.o fem3D.o project.o results.o OPEM_L2ZZErrorEstimator.o pattern.o
+	$(CCxx) $(CxxFLAGS) csr.o solveComplexLinearSystem.o OpenParEM3D.o port.o OPEM_L2ZZErrorEstimator.o fem3D.o project.o results.o pattern.o -o OpenParEM3D $(CxxLDIR) $(CxxLIBS)
 
 tline3: tline3.o
 	$(CCxx) $(CxxFLAGS) tline3.o -o tline3 $(CxxLDIR) $(CxxLIBS)
@@ -133,6 +136,7 @@ clean:
 	rm -f solveComplexLinearSystem.o
 	rm -f csr.o
 	rm -f fem3D.o
+	rm -f pattern.o
 	rm -f results.o
 	rm -f port.o
 	rm -f process3D.o

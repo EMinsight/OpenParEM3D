@@ -5,7 +5,7 @@
 project.save.fields            false
 
 mesh.file                      refined_straight.msh
-mesh.save.refined              true
+mesh.save.refined              false
 
 mesh.order                     1
 mesh.quality.limit             1e9

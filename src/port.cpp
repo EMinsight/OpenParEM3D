@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -36,6 +36,11 @@ string convertLogic (bool a)
    if (a) retval="true";
    else retval="false";
    return retval;
+}
+
+double edgeLength3D (double *a, double *b)
+{
+   return sqrt(pow(a[0]-b[0],2)+pow(a[1]-b[1],2)+pow(a[2]-b[2],2));
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -548,6 +553,8 @@ Boundary::Boundary(int startLine_, int endLine_)
    wave_impedance.set_checkLimits(true);
 
    is_default=false;
+   normal.SetSize(3);
+   normal(0)=-1; normal(1)=-1; normal(2)=-1;
 }
 
 bool Boundary::load(string *indent, inputFile *inputs)
@@ -765,9 +772,10 @@ void Boundary::print()
       }
       i++;
    }
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"   outward normal=(%g,%g,%g)\n",normal(0),normal(1),normal(2));
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   attribute=%d\n",attribute);
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   assignedToMesh=%d\n",assignedToMesh);
-   prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated=%p\n",rotated);
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"   outline=%p\n",outline);
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   is_default=%s\n",convertLogic(is_default).c_str());
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"EndBoundary\n");
 
@@ -904,20 +912,24 @@ bool Boundary::checkBoundingBox (Vector *lowerLeft, Vector *upperRight, string *
 
 bool Boundary::merge(vector<Path *> *pathList)
 {
-   Path *mergedPath=nullptr;
+   // a path must be defined
+   if (pathIndexList.size() == 0) return true;
+
+   // no merge is required
+   if (pathIndexList.size() == 1) {
+      outline=(*pathList)[pathIndexList[0]];
+      return false;
+   }
 
    // merge
 
-   bool fail=mergePaths(pathList,&pathIndexList,&reverseList,"Boundary",get_name(),&mergedPath);
-   if (fail) return fail;
-
-   if (! mergedPath) return fail;
+   if (mergePaths(pathList,&pathIndexList,&reverseList,"Boundary",get_name(),&outline,1e-12)) return true;
+   if (!outline) return true;
 
    stringstream pathName;
    pathName << "B" << get_name() << "_OpenParEM3D_generated";
-   mergedPath->set_name(pathName.str());
-
-   pathList->push_back(mergedPath);
+   outline->set_name(pathName.str());
+   pathList->push_back(outline);
 
    // update the tracking information
 
@@ -932,37 +944,28 @@ bool Boundary::merge(vector<Path *> *pathList)
    reverseList.clear();
    reverseList.push_back(false);
 
-   return fail;
-}
-
-bool Boundary::createRotated (vector<Path *> *pathList, string indent)
-{
-   if (pathIndexList.size() != 1) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3141: Boundary at line %d is incorrectly formatted.\n",
-                                             indent.c_str(),indent.c_str(),startLine);
-      return true;
-   }
-
-   if (rotated != nullptr) delete rotated; 
-   rotated=(*pathList)[pathIndexList[0]]->rotateToXYplane();
-
-   if (! rotated) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3069: Boundary at line %d does not form a closed polygon with nonzero area.\n",
-                                             indent.c_str(),indent.c_str(),startLine);
-      return true;
-   }
    return false;
 }
 
 bool Boundary::is_point_inside (double x, double y, double z)
 {
-   if (! rotated) return false;  // not a closed boundary because it failed the rotation operation, so no point can be inside
-   if (rotated->is_point_inside (x,y,z)) return true;
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Boundary::is_point_inside operation on a Boundary without an outline.\n");
+      return false;
+   }
+
+   struct point p=set_point(x,y,z,3);
+   if (outline->is_point_inside (p)) return true;
    return false;
 }
 
 bool Boundary::is_triangleInside (DenseMatrix *pointMat)
 {
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Boundary::is_triangleInside operation on a Boundary without an outline.\n");
+      return false;
+   }
+
    if (is_point_inside (pointMat->Elem(0,0),pointMat->Elem(1,0),pointMat->Elem(2,0)) &&
        is_point_inside (pointMat->Elem(0,1),pointMat->Elem(1,1),pointMat->Elem(2,1)) &&
        is_point_inside (pointMat->Elem(0,2),pointMat->Elem(1,2),pointMat->Elem(2,2))) {
@@ -973,15 +976,15 @@ bool Boundary::is_triangleInside (DenseMatrix *pointMat)
 
 bool Boundary::is_overlapPath (vector<Path *> *pathList, Path *testPath)
 {
-   if (pathIndexList.size() != 1) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Boundary::is_overlapPath operation on a Boundary with an invalid path definition.\n");
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Boundary::is_overlapPath operation on a Boundary without an outline.\n");
       return false;
    }
 
    // any point interior constitutes an overlap
    long unsigned int i=0;
    while (i < testPath->get_points_size()) {
-      if (rotated->is_point_interior(testPath->get_point_x(i),testPath->get_point_y(i),testPath->get_point_z(i))) return true;
+      if (outline->is_point_interior(testPath->get_point_value(i))) return true;
       i++;
    }
 
@@ -989,7 +992,7 @@ bool Boundary::is_overlapPath (vector<Path *> *pathList, Path *testPath)
    bool outside=false;
    i=0;
    while (i < testPath->get_points_size()) {
-      if (! rotated->is_point_inside(testPath->get_point_x(i),testPath->get_point_y(i),testPath->get_point_z(i))) {
+      if (! outline->is_point_inside(testPath->get_point_value(i))) {
          outside=true;
          break;
       }
@@ -998,7 +1001,7 @@ bool Boundary::is_overlapPath (vector<Path *> *pathList, Path *testPath)
    if (! outside) return true;
 
    // crossing lines constitutes an overlap
-   if (rotated->is_path_overlap(testPath)) return true;
+   if (outline->is_path_overlap(testPath)) return true;
 
    return false;
 }
@@ -1037,6 +1040,320 @@ void Boundary::addImpedanceIntegrator (double frequency, double temperature, Par
    ZconstList.push_back(Zconst);
 }
 
+bool Boundary::calculateRadiationCurrents (ParMesh *pmesh, struct projectData *projData, Vector center, double radiation_beta, double lengthLimit,
+                                  ParGridFunction *gridReE, ParGridFunction *gridImE, ParGridFunction *gridReH, ParGridFunction *gridImH)
+{
+   PetscMPIInt rank;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+
+   bool fail=false;
+
+   if (!is_radiation()) return false;
+
+   // get the normal to this boundary
+
+   Vector PosNormal(3);
+   PosNormal(0)=normal(0);
+   PosNormal(1)=normal(1);
+   PosNormal(2)=normal(2);
+   VectorConstantCoefficient PosNormalCoef(PosNormal);
+
+   Vector NegNormal(3);
+   NegNormal(0)=-normal(0);
+   NegNormal(1)=-normal(1);
+   NegNormal(2)=-normal(2);
+   VectorConstantCoefficient NegNormalCoef(NegNormal);
+
+   // identify this boundary
+   Array<int> border_attributes(1);
+   border_attributes[0]=attribute;
+
+   // extract the 2D mesh
+   ParSubMesh parSubMeshRadiation=ParSubMesh::CreateFromBoundary(*pmesh,border_attributes);
+
+   // create finite elements for the mesh
+   ND_FECollection fec2D_ND(projData->mesh_order,parSubMeshRadiation.Dimension());
+   ParFiniteElementSpace fes2D_ND(&parSubMeshRadiation,&fec2D_ND);
+
+   // create 2D grids
+   ParGridFunction gridReRadEt(&fes2D_ND);
+   ParGridFunction gridImRadEt(&fes2D_ND);
+   ParGridFunction gridReRadHt(&fes2D_ND);
+   ParGridFunction gridImRadHt(&fes2D_ND);
+
+   // transfer the 3D solution to the 2D grids
+
+   ParTransferMap *ReEt=new ParTransferMap(*gridReE,gridReRadEt);
+   ReEt->Transfer(*gridReE,gridReRadEt);
+   delete ReEt; ReEt=nullptr;
+
+   ParTransferMap *ImEt=new ParTransferMap(*gridImE,gridImRadEt);
+   ImEt->Transfer(*gridImE,gridImRadEt);
+   delete ImEt; ImEt=nullptr;
+
+   ParTransferMap *ReHt=new ParTransferMap(*gridReH,gridReRadHt);
+   ReHt->Transfer(*gridReH,gridReRadHt);
+   delete ReHt; ReHt=nullptr;
+
+   ParTransferMap *ImHt=new ParTransferMap(*gridImH,gridImRadHt);
+   ImHt->Transfer(*gridImH,gridImRadHt);
+   delete ImHt; ImHt=nullptr;
+
+   // calculate J
+
+   RT_FECollection fec2D_RT(projData->mesh_order,parSubMeshRadiation.Dimension());
+   ParFiniteElementSpace fes2D_RT(&parSubMeshRadiation,&fec2D_RT);
+
+   ParGridFunction gridReJ=ParGridFunction(&fes2D_RT);
+   ParGridFunction gridImJ=ParGridFunction(&fes2D_RT);
+
+   ParDiscreteLinearOperator posncross (&fes2D_ND,&fes2D_RT);
+   posncross.AddDomainInterpolator(new VectorCrossProductInterpolator(PosNormalCoef));
+   posncross.Assemble();
+   posncross.Finalize();
+   posncross.Mult(gridReRadHt,gridReJ);
+   posncross.Mult(gridImRadHt,gridImJ);
+
+   // calculate M
+
+   ParGridFunction gridReM=ParGridFunction(&fes2D_RT);
+   ParGridFunction gridImM=ParGridFunction(&fes2D_RT);
+
+   ParDiscreteLinearOperator negncross (&fes2D_ND,&fes2D_RT);
+   negncross.AddDomainInterpolator(new VectorCrossProductInterpolator(NegNormalCoef));
+   negncross.Assemble();
+   negncross.Finalize();
+   negncross.Mult(gridReRadEt,gridReM);
+   negncross.Mult(gridImRadEt,gridImM);
+
+   // refine the mesh
+
+   double wavelength=2*M_PI/radiation_beta;  // assumed mur=1
+   double global_shortest=0;
+   double global_longest=DBL_MAX;
+   double previous_global_longest=DBL_MAX;
+
+   if (projData->output_show_refining_mesh) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"            radiation boundary \"%s\":\n",get_name().c_str());
+   }
+
+   while (global_longest > lengthLimit) {
+
+      double shortest=DBL_MAX;
+      double longest=0;
+
+      vector<int> elements;
+      int e=0;
+      while (e < parSubMeshRadiation.GetNE()) {
+
+         Array<int> vertices;
+         parSubMeshRadiation.GetElementVertices(e,vertices);
+
+         double element_shortest=DBL_MAX;
+         double element_longest=0;
+
+         int j=0;
+         while (j < vertices.Size()) {
+
+            double *coordsj=parSubMeshRadiation.GetVertex(vertices[j]);
+
+            // calculate element lengths
+            int k=0;
+            while (k < vertices.Size()) {
+               if (k != j) {
+                  double *coordsk=parSubMeshRadiation.GetVertex(vertices[k]);
+                  double length=edgeLength3D(coordsj,coordsk)/wavelength;
+                  if (length > element_longest) element_longest=length;
+                  if (length < element_shortest) element_shortest=length;
+               }
+               k++;
+            }
+            j++;
+         }
+
+         // save the element for refinement
+         if (element_longest > lengthLimit) {
+            elements.push_back(e);
+         }
+
+         // keep track of overall sizes
+         if (element_longest > longest) longest=element_longest;
+         if (element_shortest < shortest) shortest=element_shortest;
+
+         e++;
+      }
+
+      // get the global overall sizes
+      MPI_Allreduce (&shortest,&global_shortest,1,MPI_DOUBLE,MPI_MIN,PETSC_COMM_WORLD);
+      MPI_Allreduce (&longest,&global_longest,1,MPI_DOUBLE,MPI_MAX,PETSC_COMM_WORLD);
+
+      int local_element_count=parSubMeshRadiation.GetNE();
+      int global_element_count;
+      MPI_Allreduce (&local_element_count,&global_element_count,1,MPI_INT,MPI_SUM,PETSC_COMM_WORLD);
+
+      if (projData->output_show_refining_mesh) {
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"               number of mesh elements=%d\n",global_element_count);
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"                  shortest element edge per wavelength=%g\n",global_shortest);
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"                  longest element edge per wavelength=%g\n",global_longest);
+      }
+
+      if (global_longest <= lengthLimit) break;
+
+      if (global_longest > previous_global_longest) {
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"            ERROR3069: Failure in mesh refinement for adaptive boundary %s.\n", get_name().c_str());
+         fail=true;
+      }
+      previous_global_longest=global_longest;
+
+      // transfer the data for use with GeneralRefinement
+      Array<int> localRefineList(elements.size());
+      int i=0;
+      while (i < (int)elements.size()) {
+         localRefineList[i]=elements[i];
+         i++;
+      }
+
+      // refine and update
+      parSubMeshRadiation.GeneralRefinement(localRefineList);
+      fes2D_ND.Update();
+      fes2D_RT.Update();
+      gridReRadEt.Update();
+      gridImRadEt.Update();
+      gridReRadHt.Update();
+      gridImRadHt.Update();
+      gridReJ.Update();
+      gridImJ.Update();
+      gridReM.Update();
+      gridImM.Update();
+
+      if (fail) break;
+   }
+
+   /*
+   // for debug
+   stringstream ss;
+   ss << "surface_currents_" << get_name();
+
+   stringstream ssParaView;
+   ssParaView << "ParaView_debug";
+
+   ParaViewDataCollection *pd=nullptr;
+   pd=new ParaViewDataCollection(ss.str(),&parSubMeshRadiation);
+   pd->SetOwnData(false);
+   pd->SetPrefixPath(ssParaView.str());
+   pd->RegisterField("gridReJ",&gridReJ);
+   pd->RegisterField("gridImJ",&gridImJ);
+   pd->RegisterField("gridReM",&gridReM);
+   pd->RegisterField("gridImM",&gridImM);
+   pd->SetLevelsOfDetail(3);
+   pd->SetDataFormat(VTKFormat::ASCII);
+   pd->SetHighOrderOutput(true);
+   pd->Save();
+   delete pd;
+   */
+
+   // transfer the data for more convenient use
+   // [Work-around for the fact that ParSubMesh does not have a constructor.]
+
+   int i=0;
+   while (i < parSubMeshRadiation.GetNE()) {
+
+      // field values
+
+      // get the antenna point
+
+      int geom=parSubMeshRadiation.GetElementGeometry(i);
+      IntegrationPoint ip=Geometries.GetCenter(geom);     // reference coordinates
+
+      Vector ReJvalue,ImJvalue,ReMvalue,ImMvalue;
+      gridReJ.GetVectorValue(i,ip,ReJvalue);
+      gridImJ.GetVectorValue(i,ip,ImJvalue);
+      gridReM.GetVectorValue(i,ip,ReMvalue);
+      gridImM.GetVectorValue(i,ip,ImMvalue);
+
+      double area;
+      area=parSubMeshRadiation.GetElementVolume(i);
+
+      complex<double> Jx=complex<double>(ReJvalue(0),ImJvalue(0));
+      complex<double> Jy=complex<double>(ReJvalue(1),ImJvalue(1));
+      complex<double> Jz=complex<double>(ReJvalue(2),ImJvalue(2));
+
+      complex<double> Mx=complex<double>(ReMvalue(0),ImMvalue(0));
+      complex<double> My=complex<double>(ReMvalue(1),ImMvalue(1));
+      complex<double> Mz=complex<double>(ReMvalue(2),ImMvalue(2));
+
+      // save
+
+      Vector vecrp;
+      parSubMeshRadiation.GetElementCenter(i,vecrp);     // physical coordinates
+
+      Current *current=new Current (vecrp(0),vecrp(1),vecrp(2),Jx,Jy,Jz,Mx,My,Mz,area);
+      radiationCurrents.push_back(current);
+
+      i++;
+   }
+
+   return fail;
+}
+
+void Boundary::collectRadiationCurrents (vector<Current *> *collectedCurrents)
+{
+   PetscMPIInt rank,size;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+   MPI_Comm_size(PETSC_COMM_WORLD, &size);
+
+   if (rank == 0) {
+
+      // collect currents from this rank
+      int i=0;
+      while (i < (int)radiationCurrents.size()) {
+         Current *current=radiationCurrents[i]->clone();
+         collectedCurrents->push_back(current);
+         i++;
+      }
+
+      // collect currents from other ranks
+      i=1;
+      while (i < size) {
+         int count;
+         MPI_Recv(&count,1,MPI_INT,i,10000,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+         int j=0;
+         while (j < count) {
+            Current *current=new Current();
+            current->recvFrom(i);
+            collectedCurrents->push_back(current);
+            j++;
+         }
+         i++;
+      }
+   } else {
+      int count=radiationCurrents.size();
+      MPI_Send(&count,1,MPI_INT,0,10000,PETSC_COMM_WORLD);
+
+      // send to rank 0
+      long unsigned int i=0;
+      while (i < radiationCurrents.size()) {
+         radiationCurrents[i]->sendTo(0);
+         i++;
+      }
+   }
+
+   // clear the local currents
+   deleteRadiationCurrents();
+}
+
+void Boundary::deleteRadiationCurrents ()
+{
+   long unsigned int i=0;
+   while (i < radiationCurrents.size()) {
+      delete radiationCurrents[i];
+      i++;
+   }
+
+   radiationCurrents.clear();
+}
+
 bool Boundary::snapToMeshBoundary (vector<Path *> *pathList, Mesh *mesh, string indent)
 {
    if (pathIndexList.size() != 1) {
@@ -1057,7 +1374,7 @@ bool Boundary::snapToMeshBoundary (vector<Path *> *pathList, Mesh *mesh, string 
 
 Boundary::~Boundary()
 {
-   if (rotated != nullptr) {delete rotated; rotated=nullptr;}
+   deleteRadiationCurrents();
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////
@@ -1314,7 +1631,8 @@ bool IntegrationPath::align (string *indent, vector<Path *> *pathList, double *a
    double path_area;
    long unsigned int path_index;
    Path *path;
-   double x0,y0,z0,xend,yend,zend;
+   double xend,yend,zend;
+   struct point p0,pend;
    vector<long unsigned int> pathComponents;
    vector<bool> used;
 
@@ -1371,6 +1689,11 @@ bool IntegrationPath::align (string *indent, vector<Path *> *pathList, double *a
                while (k < used.size()) {
                   if (!used[k] && k != j) {
                      Path *tpk=(*pathList)[pathIndexList[k]];
+                     if (point_comparison(tpk->get_point_value(0),tpj->get_point_value(0),1e-12)) match_start_count++;
+                     if (point_comparison(tpk->get_point_value(0),tpj->get_point_value(tpj->get_points_size()-1),1e-12)) match_end_count++;
+                     if (point_comparison(tpk->get_point_value(tpk->get_points_size()-1),tpj->get_point_value(0),1e-12)) match_start_count++;
+                     if (point_comparison(tpk->get_point_value(tpk->get_points_size()-1),tpj->get_point_value(tpj->get_points_size()-1),1e-12)) match_end_count++;
+/*
                      if (double_compare(tpk->get_point_x(0),tpj->get_point_x(0),1e-12) &&
                          double_compare(tpk->get_point_y(0),tpj->get_point_y(0),1e-12) &&
                          double_compare(tpk->get_point_z(0),tpj->get_point_z(0),1e-12)) match_start_count++;
@@ -1383,6 +1706,7 @@ bool IntegrationPath::align (string *indent, vector<Path *> *pathList, double *a
                      if (double_compare(tpk->get_point_x(tpk->get_points_size()-1),tpj->get_point_x(tpj->get_points_size()-1),1e-12) &&
                          double_compare(tpk->get_point_y(tpk->get_points_size()-1),tpj->get_point_y(tpj->get_points_size()-1),1e-12) &&
                          double_compare(tpk->get_point_z(tpk->get_points_size()-1),tpj->get_point_z(tpj->get_points_size()-1),1e-12)) match_end_count++;
+*/
                   }
                   k++;
                }
@@ -1414,18 +1738,15 @@ bool IntegrationPath::align (string *indent, vector<Path *> *pathList, double *a
             } else {
                Path *tpj=(*pathList)[pathIndexList[j]];
 
-               if (double_compare(tpj->get_point_x(0),xend,1e-12) &&
-                   double_compare(tpj->get_point_y(0),yend,1e-12) &&
-                   double_compare(tpj->get_point_z(0),zend,1e-12)) {
+               struct point pend=set_point(xend,yend,zend,3);
+               if (point_comparison(tpj->get_point_value(0),pend,1e-12)) {
                   path_index=j;
                   path=tpj;
                   used[path_index]=true;
                   break;
                }
 
-               if (double_compare(tpj->get_point_x(tpj->get_points_size()-1),xend,1e-12) &&
-                   double_compare(tpj->get_point_y(tpj->get_points_size()-1),yend,1e-12) &&
-                   double_compare(tpj->get_point_z(tpj->get_points_size()-1),zend,1e-12)) {
+               if (point_comparison(tpj->get_point_value(tpj->get_points_size()-1),pend,1e-12)) {
                   path_index=j;
                   path=tpj;
                   path->reverseOrder();
@@ -1482,19 +1803,18 @@ bool IntegrationPath::align (string *indent, vector<Path *> *pathList, double *a
 
       if (start_new_path) {
          start_new_path=false;
-         x0=path->get_point_x(0);
-         y0=path->get_point_y(0);
-         z0=path->get_point_z(0);
+         p0=path->get_point_value(0);
       }
 
-      xend=path->get_point_x(path->get_points_size()-1);
-      yend=path->get_point_y(path->get_points_size()-1);
-      zend=path->get_point_z(path->get_points_size()-1);
+      pend=path->get_point_value(path->get_points_size()-1);
+      xend=pend.x;
+      yend=pend.y;
+      zend=pend.z;
 
       path_area+=path->area();
 
       // check if this loop is completed by comparing the end vs. the start
-      if (double_compare(x0,xend,1e-12) && double_compare(y0,yend,1e-12) && double_compare(z0,zend,1e-12)) {
+      if (point_comparison(p0,pend,1e-12)) {
 
          // reverse path if clockwise
          if (path_area < 0) {
@@ -1596,11 +1916,9 @@ cout << "using old IntegrationPath::check_current_paths" << endl;
                      connectedStart[i]=true;
                      connectedStart[j]=true;
                   } else {
+                     struct point p=(*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value();
                      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3043: Mode block at line %d topology error at (%g,%g,%g).\n",
-                                                            indent->c_str(),indent->c_str(),startLine,
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_x(),
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_y(),
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_z());
+                                                            indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                      fail=true;
                   }
                }
@@ -1611,11 +1929,9 @@ cout << "using old IntegrationPath::check_current_paths" << endl;
                      connectedStart[i]=true;
                      connectedEnd[j]=true;
                   } else {
+                     struct point p=(*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value();
                      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3044: Mode block at line %d topology error at (%g,%g,%g).\n",
-                                                            indent->c_str(),indent->c_str(),startLine,
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_x(),
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_y(),
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_z());
+                                                            indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                      fail=true;
                   }
                }
@@ -1626,11 +1942,9 @@ cout << "using old IntegrationPath::check_current_paths" << endl;
                      connectedEnd[i]=true;
                      connectedStart[j]=true;
                   } else {
+                     struct point p=(*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value();
                      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3045: Mode block at line %d topology error at (%g,%g,%g).\n",
-                                                            indent->c_str(),indent->c_str(),startLine,
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_x(),
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_y(),
-                                                  (*pathList)[pathIndexList[j]]->get_startPoint()->get_point_value_z());
+                                                            indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                      fail=true;
                   }
                }
@@ -1641,11 +1955,9 @@ cout << "using old IntegrationPath::check_current_paths" << endl;
                      connectedEnd[i]=true;
                      connectedEnd[j]=true;
                   } else {
+                     struct point p=(*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value();
                      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3046: Mode block at line %d topology error at (%g,%g,%g).\n",
-                                                            indent->c_str(),indent->c_str(),startLine,
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_x(),
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_y(),
-                                                  (*pathList)[pathIndexList[j]]->get_endPoint()->get_point_value_z());
+                                                            indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                      fail=true;
                   }
                }
@@ -1663,19 +1975,15 @@ cout << "using old IntegrationPath::check_current_paths" << endl;
       while (i < pathIndexList.size()) {
          if (! closed[i]) {
             if (! connectedStart[i]) {
+               struct point p=(*pathList)[pathIndexList[i]]->get_startPoint()->get_point_value();
                prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3047: Mode block at line %d topology error with dangling point at (%g,%g,%g).\n",
-                                                      indent->c_str(),indent->c_str(),startLine,
-                                            (*pathList)[pathIndexList[i]]->get_startPoint()->get_point_value_x(),
-                                            (*pathList)[pathIndexList[i]]->get_startPoint()->get_point_value_y(),
-                                            (*pathList)[pathIndexList[i]]->get_startPoint()->get_point_value_z());
+                                                      indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                fail=true;
             }
             if (! connectedEnd[i]) {
+               struct point p=(*pathList)[pathIndexList[i]]->get_endPoint()->get_point_value();
                prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3048: Mode block at line %d topology error with dangling point at (%g,%g,%g).\n",
-                                                      indent->c_str(),indent->c_str(),startLine,
-                                            (*pathList)[pathIndexList[i]]->get_endPoint()->get_point_value_x(),
-                                            (*pathList)[pathIndexList[i]]->get_endPoint()->get_point_value_y(),
-                                            (*pathList)[pathIndexList[i]]->get_endPoint()->get_point_value_z());
+                                                      indent->c_str(),indent->c_str(),startLine,p.x,p.y,p.z);
                fail=true;
             }
          }
@@ -2218,9 +2526,10 @@ void FieldSet::fillIntegrationPoints (vector<Path *> *pathList, vector<long unsi
       long unsigned int limit=path->get_points_size();
       if (path->is_closed()) limit++;
 
-      x2=path->get_point_x(0);
-      y2=path->get_point_y(0);
-      z2=path->get_point_z(0);
+      struct point p2=path->get_point_value(0);
+      x2=p2.x;
+      y2=p2.y;
+      z2=p2.z;
 
       long unsigned int j=1;
       while (j < limit) {
@@ -2231,18 +2540,21 @@ void FieldSet::fillIntegrationPoints (vector<Path *> *pathList, vector<long unsi
 
          if (path->is_closed()) {
             if (j < limit-1) {
-               x2=path->get_point_x(j);
-               y2=path->get_point_y(j);
-               z2=path->get_point_z(j);
+               struct point p2=path->get_point_value(j);
+               x2=p2.x;
+               y2=p2.y;
+               z2=p2.z;
             } else {
-               x2=path->get_point_x(0);
-               y2=path->get_point_y(0);
-               z2=path->get_point_z(0);
+               struct point p2=path->get_point_value(0);
+               x2=p2.x;
+               y2=p2.y;
+               z2=p2.z;
             }
          } else {
-            x2=path->get_point_x(j);
-            y2=path->get_point_y(j);
-            z2=path->get_point_z(j);
+            struct point p2=path->get_point_value(j);
+            x2=p2.x;
+            y2=p2.y;
+            z2=p2.z;
          }
 
          // get points along the integration line
@@ -3253,6 +3565,18 @@ void Mode::calculateSplits (ParFiniteElementSpace *fes2D_L2,
    Cm.push_back(0.5*(e0/e2-h0/h2)); 
 }
 
+// Supports only driving set single (so weights are not supported)
+// ToDo: generalize for other driving sets
+complex<double> Mode::calculatePowerIn (int Sport_)
+{
+   return Cm[Sport_-1]*conj(Cm[Sport_-1])*get_Pz();
+}
+
+complex<double> Mode::calculatePowerOut (int Sport_)
+{
+   return Cp[Sport_-1]*conj(Cp[Sport_-1])*get_Pz();
+}
+
 void Mode::transfer_2Dsolution_2Dgrids_to_3Dgrids ()
 {
    fields.transfer_2Dsolution_2Dgrids_to_3Dgrids();
@@ -3945,15 +4269,15 @@ bool Port::check (string *indent, vector<Path *> *pathList, bool check_closed_lo
 
 bool Port::is_overlapPath (Path *testPath)
 {
-   if (pathIndexList.size() != 1) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::is_overlapPath operation on a Port with an invalid path definition.\n");
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::is_overlapPath operation on a Port without an outline.\n");
       return false;
    }
 
    // any point interior constitutes an overlap
    long unsigned int i=0;
    while (i < testPath->get_points_size()) {
-      if (rotated->is_point_interior(testPath->get_point_x(i),testPath->get_point_y(i),testPath->get_point_z(i))) return true;
+      if (outline->is_point_interior(testPath->get_point_value(i))) return true;
       i++;
    }
 
@@ -3961,7 +4285,7 @@ bool Port::is_overlapPath (Path *testPath)
    bool outside=false;
    i=0;
    while (i < testPath->get_points_size()) {
-      if (! rotated->is_point_inside(testPath->get_point_x(i),testPath->get_point_y(i),testPath->get_point_z(i))) {
+      if (! outline->is_point_inside(testPath->get_point_value(i))) {
          outside=true;
          break;
       }
@@ -3970,7 +4294,7 @@ bool Port::is_overlapPath (Path *testPath)
    if (! outside) return true;
 
    // crossing lines constitutes an overlap
-   if (rotated->is_path_overlap(testPath)) return true;
+   if (outline->is_path_overlap(testPath)) return true;
 
    return false;
 }
@@ -4093,10 +4417,14 @@ void Port::print ()
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   spin180degrees=%d\n",spin180degrees);
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   meshFilename=%s\n",meshFilename.c_str());
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   modesFilename=%s\n",modesFilename.c_str());
-   if (rotated) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated=%p:\n",rotated);
-      rotated->print("      ");
-   } else {prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated=%p\n",rotated);}
+   if (outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"   outline=%p:\n",outline);
+      outline->print("      ");
+   } else {prefix(); PetscPrintf(PETSC_COMM_WORLD,"   outline=%p\n",outline);}
+   if (rotated_outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated_outline=%p:\n",rotated_outline);
+      rotated_outline->print("      ");
+   } else {prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated_outline=%p\n",rotated_outline);}
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   outward normal=(%g,%g,%g)\n",normal(0),normal(1),normal(2));
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   rotated outward normal=(%g,%g,%g)\n",rotated_normal(0),rotated_normal(1),rotated_normal(2));
 
@@ -4144,8 +4472,10 @@ void Port::printPaths (vector<Path *> *pathList)
       (*pathList)[pathIndexList[i]]->print("      ");
       i++;
    }
+   prefix(); PetscPrintf(PETSC_COMM_WORLD,"   Outline Path:\n");
+   if (outline) outline->print("      ");
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   Rotated Path:\n");
-   if (rotated) rotated->print("      ");
+   if (rotated_outline) rotated_outline->print("      ");
 }
 
 bool Port::createDirectory (string *tempDirectory)
@@ -4183,7 +4513,7 @@ void Port::saveMesh (MeshMaterialList *materials, string *directory, ParSubMesh 
          Mesh *mesh2Dbase;
          mesh2Dbase=mesh2D;
          *mesh2Dbase=parSubMesh->GetSerialMesh(0);
-         mesh2D->rotate(rotated,spin180degrees);
+         mesh2D->rotate(rotated_outline,spin180degrees);
          mesh2D->set_spaceDim(2);
          mesh2D->Print(serout);
          delete mesh2D;
@@ -4272,7 +4602,7 @@ bool Port::postProcessMesh (string input_filename, string temp_output_filename)
            }
 
            // rotate so the normal points in the +z direction
-           rotated->rotatePoint(&x,&y,&z,spin180degrees);
+           rotated_outline->rotatePoint(&x,&y,&z,spin180degrees);
 
            // skip z on output
            OUTPUT << setprecision(15) << x << " " << y << endl;
@@ -4385,7 +4715,7 @@ void Port::saveModeFile (struct projectData *projData, vector<Path *> *pathList,
       prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::saveModeFile operation on a Port with an invalid path definition.\n");
    }
 
-   if (!rotated) {
+   if (!rotated_outline) {
       prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::saveModeFile operation on a Port without a rotated path.\n");
    }
 
@@ -4407,14 +4737,17 @@ void Port::saveModeFile (struct projectData *projData, vector<Path *> *pathList,
 
       // boundaries
 
-      x1=path->get_point_x(0); y1=path->get_point_y(0); z1=path->get_point_z(0);
+      struct point p1=path->get_point_value(0);
+      x1=p1.x; y1=p1.y; z1=p1.z;
 
       long unsigned int i=0;
       while (i < path->get_points_size()) {
          if (!path->is_closed() && i == path->get_points_size()-1) break;
 
-         if (i < path->get_points_size()-1) {x2=path->get_point_x(i+1); y2=path->get_point_y(i+1); z2=path->get_point_z(i+1);}
-         else {x2=path->get_point_x(0); y2=path->get_point_y(0); z2=path->get_point_z(0);}
+         struct point p2;
+         if (i < path->get_points_size()-1) p2=path->get_point_value(i+1);
+         else p2=path->get_point_value(0);
+         x2=p2.x; y2=p2.y; z2=p2.z;
 
          Boundary* boundary=boundaryDatabase->get_matchBoundary (x1,y1,z1,x2,y2,z2);
          if (boundary) {
@@ -4422,8 +4755,8 @@ void Port::saveModeFile (struct projectData *projData, vector<Path *> *pathList,
             xr1=x1; yr1=y1; zr1=z1;
             xr2=x2; yr2=y2; zr2=z2;
 
-            rotated->rotatePoint(&xr1,&yr1,&zr1,spin180degrees);
-            rotated->rotatePoint(&xr2,&yr2,&zr2,spin180degrees);
+            rotated_outline->rotatePoint(&xr1,&yr1,&zr1,spin180degrees);
+            rotated_outline->rotatePoint(&xr2,&yr2,&zr2,spin180degrees);
 
             modeFile << "Path" << endl;
             modeFile << "   name=path" << pathNumber << endl;
@@ -4460,7 +4793,7 @@ void Port::saveModeFile (struct projectData *projData, vector<Path *> *pathList,
       // modes
       i=0;
       while (i < modeList.size()) {
-         modeList[i]->output(&modeFile,pathList,rotated,spin180degrees);
+         modeList[i]->output(&modeFile,pathList,rotated_outline,spin180degrees);
          i++;
       }
    } else {
@@ -4470,22 +4803,28 @@ void Port::saveModeFile (struct projectData *projData, vector<Path *> *pathList,
 
 bool Port::merge(vector<Path *> *pathList)
 {
-   Path *mergedPath=nullptr;
+   // a path must be defined
+   if (pathIndexList.size() == 0) return true;
+
+   // no merge is required
+   if (pathIndexList.size() == 1) {
+      outline=(*pathList)[pathIndexList[0]];
+      return false;
+   }
 
    // merge
 
    stringstream boundaryName;
    boundaryName << get_name();
 
-   bool fail=mergePaths(pathList,&pathIndexList,&reverseList,"Port",boundaryName.str(),&mergedPath);
-   if (fail) return fail;
-
-   if (! mergedPath) return fail;
+   Path *mergedPath=nullptr;
+   if (mergePaths(pathList,&pathIndexList,&reverseList,"Port",boundaryName.str(),&mergedPath,1e-12)) return true;
+   if (!mergedPath) return true;
 
    stringstream pathName;
    pathName << "S" << get_name() << "_OpenParEM3D_generated";
    mergedPath->set_name(pathName.str());
-
+   outline=mergedPath;
    pathList->push_back(mergedPath);
 
    // update the tracking information
@@ -4501,21 +4840,19 @@ bool Port::merge(vector<Path *> *pathList)
    reverseList.clear();
    reverseList.push_back(false);
 
-   return fail;
+   return false;
 }
 
 bool Port::createRotated (vector<Path *> *pathList, string indent)
 {
-   if (pathIndexList.size() != 1) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3068: Port at line %d is incorrectly formatted.\n",
-                                             indent.c_str(),indent.c_str(),startLine);
-      return true;
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::createRotated operation on a Port without an outline.\n");
+      return false;
    }
 
-   if (rotated != nullptr) delete rotated;
-   rotated=(*pathList)[pathIndexList[0]]->rotateToXYplane();
+   rotated_outline=outline->rotateToXYplane();
 
-   if (! rotated) {
+   if (! rotated_outline) {
       prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3140: Port at line %d does not form a closed polygon with nonzero area.\n",
                                              indent.c_str(),indent.c_str(),startLine);
       return true;
@@ -4525,8 +4862,13 @@ bool Port::createRotated (vector<Path *> *pathList, string indent)
 
 bool Port::is_point_inside (double x, double y, double z)
 {
-   if (! rotated) return false;  // not a closed boundary because it failed the rotation operation, so no point can be inside
-   if (rotated->is_point_inside (x,y,z)) return true;
+   if (!outline) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Port::is_point_inside operation on a Port without an outline.\n");
+      return false;
+   }
+
+   struct point p=set_point(x,y,z,3);
+   if (outline->is_point_inside (p)) return true;
    return false;
 }
 
@@ -4552,7 +4894,7 @@ bool Port::is_modePathInside (string *indent, vector<Path *> *pathList)
    long unsigned i=0;
    while (i < modeList.size()) {
       long unsigned int index=-1; 
-      if (! modeList[i]->is_enclosedByPath(pathList,rotated,&index)) {
+      if (! modeList[i]->is_enclosedByPath(pathList,outline,&index)) {
          prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3083: Port %s Mode %d of type \"%s\" is not enclosed within the port.\n",
             indent->c_str(),indent->c_str(),get_name().c_str(),modeList[i]->get_Sport(),modeList[i]->get_type(index).c_str());
          fail=true;
@@ -4574,7 +4916,7 @@ bool Port::has_attribute (int attribute)
    return false;
 }
 
-bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubMeshes, long unsigned int parSubMeshIndex, double tol)
+bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubMeshesPort, long unsigned int parSubMeshIndex, double tol)
 {
    PetscMPIInt rank,size;
    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
@@ -4652,9 +4994,9 @@ bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubM
 
       // find the matching border element from the 2D mesh
       int j=0;
-      while (j < (*parSubMeshes)[parSubMeshIndex].GetNE()) {
+      while (j < (*parSubMeshesPort)[parSubMeshIndex].GetNE()) {
 
-         (*parSubMeshes)[parSubMeshIndex].GetPointMatrix(j,pointMat2D);
+         (*parSubMeshesPort)[parSubMeshIndex].GetPointMatrix(j,pointMat2D);
 
          used3D=0; used2D=0;
 
@@ -4662,8 +5004,9 @@ bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubM
          while (m < 3) {
             int n=0;
             while (n < 3) {
-               if (compare_xyz(pointMat3D.Elem(0,m),pointMat3D.Elem(1,m),pointMat3D.Elem(2,m),
-                               pointMat2D.Elem(0,n),pointMat2D.Elem(1,n),pointMat2D.Elem(2,n),tol)) {
+               struct point pm=set_point(pointMat3D.Elem(0,m),pointMat3D.Elem(1,m),pointMat3D.Elem(2,m),3);
+               struct point pn=set_point(pointMat2D.Elem(0,n),pointMat2D.Elem(1,n),pointMat2D.Elem(2,n),3);
+               if (point_comparison(pm,pn,tol)) {
                   used3D[m]=1;
                   used2D[n]=1;
                   break;
@@ -4683,7 +5026,7 @@ bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubM
 
          if (match) {
             mesh3D->GetBdrElementAdjacentElement (i,adjacentElemIndex,info);
-            (*parSubMeshes)[parSubMeshIndex].SetAttribute(j,mesh3D->GetAttribute(adjacentElemIndex));
+            (*parSubMeshesPort)[parSubMeshIndex].SetAttribute(j,mesh3D->GetAttribute(adjacentElemIndex));
             break;
          }
          j++;
@@ -4693,21 +5036,21 @@ bool Port::create2Dmesh (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubM
 
    // create finite element collections and spaces for this 2D port
 
-   fec2D_ND=new ND_FECollection(order,(*parSubMeshes)[parSubMeshIndex].Dimension());
-   fes2D_ND=new ParFiniteElementSpace(&((*parSubMeshes)[parSubMeshIndex]),fec2D_ND);
+   fec2D_ND=new ND_FECollection(order,(*parSubMeshesPort)[parSubMeshIndex].Dimension());
+   fes2D_ND=new ParFiniteElementSpace(&((*parSubMeshesPort)[parSubMeshIndex]),fec2D_ND);
 
-   fec2D_H1=new H1_FECollection(order,(*parSubMeshes)[parSubMeshIndex].Dimension());
-   fes2D_H1=new ParFiniteElementSpace(&((*parSubMeshes)[parSubMeshIndex]),fec2D_H1);
+   fec2D_H1=new H1_FECollection(order,(*parSubMeshesPort)[parSubMeshIndex].Dimension());
+   fes2D_H1=new ParFiniteElementSpace(&((*parSubMeshesPort)[parSubMeshIndex]),fec2D_H1);
 
-   fec2D_L2=new L2_FECollection(order,(*parSubMeshes)[parSubMeshIndex].Dimension());
-   fes2D_L2=new ParFiniteElementSpace(&((*parSubMeshes)[parSubMeshIndex]),fec2D_L2);
+   fec2D_L2=new L2_FECollection(order,(*parSubMeshesPort)[parSubMeshIndex].Dimension());
+   fes2D_L2=new ParFiniteElementSpace(&((*parSubMeshesPort)[parSubMeshIndex]),fec2D_L2);
 
    // rotate the outward normal
-   rotated_normal(0)=normal(0);
-   rotated_normal(1)=normal(1);
-   rotated_normal(2)=normal(2);
-
-   rotated->rotatePoint(&rotated_normal(0),&rotated_normal(1),&rotated_normal(2));
+   struct point p=set_point(normal(0),normal(1),normal(2),3);
+   rotated_outline->rotatePoint(&p);
+   rotated_normal(0)=p.x;
+   rotated_normal(1)=p.y;
+   rotated_normal(2)=p.z;
 
    // spin 180 degrees about the y axis if needed to ensure that the outward normal points in the +z direction
    spin180degrees=false;
@@ -5158,7 +5501,7 @@ bool Port::loadTiTv (string *directory)
    TiTv.open("TiTv.dat",ifstream::in);
    if (TiTv.is_open()) {
 
-      int lineCount;
+      int lineCount=0;
       bool inTi=false;
       bool inTv=false;
       int n=-1;
@@ -5172,8 +5515,8 @@ bool Port::loadTiTv (string *directory)
             if (n >= 0) {
                if (Ti == nullptr) Ti=(lapack_complex_double *) malloc(n*n*sizeof(lapack_complex_double));
 
-               int row,col;
-               double realVal,imagVal;
+               int row=-1,col=-1;
+               double realVal=-DBL_MAX,imagVal=-DBL_MAX;
                string value;
                int index=0;
                while (std::getline(ssLine,value,',')) {
@@ -5204,8 +5547,8 @@ bool Port::loadTiTv (string *directory)
             if (n >= 0) {
                if (Tv == nullptr) Tv=(lapack_complex_double *) malloc(n*n*sizeof(lapack_complex_double));
 
-               int row,col;
-               double realVal,imagVal;
+               int row=-1,col=-1;
+               double realVal=-DBL_MAX,imagVal=-DBL_MAX;
                string value;
                int index=0;
                while (std::getline(ssLine,value,',')) {
@@ -5530,7 +5873,7 @@ bool Port::addPortIntegrators (ParMesh *pmesh, ParBilinearForm *pmblf, PWConstCo
    return false;
 }
 
-void Port::extract2Dmesh (ParMesh *pmesh, vector<ParSubMesh> *parSubMeshes)
+void Port::extract2Dmesh (ParMesh *pmesh, vector<ParSubMesh> *parSubMeshesPort)
 {
    int count=0;
    long unsigned int i=0;
@@ -5553,7 +5896,7 @@ void Port::extract2Dmesh (ParMesh *pmesh, vector<ParSubMesh> *parSubMeshes)
    }
 
    ParSubMesh pmesh2D=ParSubMesh::CreateFromBoundary(*pmesh,border_attributes);
-   parSubMeshes->push_back(pmesh2D);
+   parSubMeshesPort->push_back(pmesh2D);
 }
 
 void Port::addWeight (complex<double> value)
@@ -5824,6 +6167,8 @@ void Port::reset()
 
    // do not delete rotated
 
+   outline=nullptr;
+
    if (ess_tdof_list) {delete ess_tdof_list; ess_tdof_list=nullptr;}
 
    if (grid2DsolutionReEt) {delete grid2DsolutionReEt; grid2DsolutionReEt=nullptr;}
@@ -5899,7 +6244,7 @@ Port::~Port ()
       i++;
    }
 
-   if (rotated) {delete rotated;}
+   if (rotated_outline) {delete rotated_outline;}
 
    if (fec2D_ND) {delete fec2D_ND; fec2D_ND=nullptr;}
    if (fes2D_ND) {delete fes2D_ND; fes2D_ND=nullptr;}
@@ -6066,12 +6411,12 @@ bool BoundaryDatabase::load (const char *filename, bool check_closed_loop) {
 
    i=0;
    while (i < boundaryList.size()) {
-      if (boundaryList[i]->load(&indent, &inputs)) fail=true;
-      else {
+      if (boundaryList[i]->load(&indent, &inputs)) {
+         fail=true;
+      } else {
          boundaryList[i]->assignPathIndices(&pathList);
-         if (boundaryList[i]->merge(&pathList)) fail=true;
-         else {
-            if (boundaryList[i]->createRotated(&pathList,indent)) fail=true;
+         if (!boundaryList[i]->is_default_boundary()) {
+            if (boundaryList[i]->merge(&pathList)) fail=true;
          }
       }
       i++;
@@ -6234,6 +6579,28 @@ bool BoundaryDatabase::check (bool check_closed_loop)
       i++;
    }
 
+   // radiation boundaries must have the same wave impedance
+   double wave_impedance=0;
+   int wave_impedance_lineNumber=-1;
+   i=0;
+   while (i < boundaryList.size()) {
+      if (boundaryList[i]->is_radiation()) {
+         double wave_impedance_test=boundaryList[i]->get_wave_impedance();
+         if (wave_impedance == 0) {
+            wave_impedance=wave_impedance_test;
+            wave_impedance_lineNumber=boundaryList[i]->get_wave_impedance_lineNumber();
+         } else {
+            if (!double_compare(wave_impedance,wave_impedance_test,1e-6)) {
+               prefix(); PetscPrintf(PETSC_COMM_WORLD,"%s%sERROR3195: wave impedance at line %d does not match that from line %d.\n",
+                                                      indent.c_str(),indent.c_str(),boundaryList[i]->get_wave_impedance_lineNumber(),
+                                                      wave_impedance_lineNumber);
+               fail=true;
+            }
+         }
+      }
+      i++;
+   }
+
    // Port
 
    i=0;
@@ -6387,6 +6754,77 @@ bool BoundaryDatabase::check_overlaps ()
    return fail;
 }
 
+// flip normals to point outward for radiation boundaries
+bool BoundaryDatabase::alignRadiationNormals ()
+{
+   PetscMPIInt rank;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+
+   bool fail=false;
+
+   // check for each radiation boundary
+   long unsigned int i=0;
+   while (i < boundaryList.size()) {
+      if (boundaryList[i]->is_radiation()) {
+
+         // create a line for the normal
+         Path *path1=pathList[boundaryList[i]->get_pathIndex(0)];
+         struct point p=path1->get_normal();
+         double nx=p.x;
+         double ny=p.y;
+         double nz=p.z;
+         struct point normal=set_point(nx,ny,nz,3);
+         struct point a=path1->getInsidePoint();
+         struct point b=point_addition(a,point_scale(1e6*pow(path1->area(),1/3.),normal));
+
+         // check for wrong direction
+         bool flip=false;
+         long unsigned int j=0;
+         while (j < boundaryList.size()) {
+            if (boundaryList[j]->is_radiation() && j != i) {
+               Path *path2=pathList[boundaryList[j]->get_pathIndex(0)];
+               if (path2->lineIntersects(a,b)) {
+                  flip=true;
+                  break;
+               }
+            }
+            j++;
+         }
+
+         if (flip) boundaryList[i]->set_normal(-nx,-ny,-nz);
+         else boundaryList[i]->set_normal(nx,ny,nz);
+
+         // check that the new direction is clear
+
+         Vector VectorNormal=boundaryList[i]->get_normal();
+         normal=set_point(VectorNormal(0),VectorNormal(1),VectorNormal(2),3);
+         b=point_addition(a,point_scale(1e6*pow(path1->area(),1/3.),normal));
+
+         flip=false;
+         j=0;
+         while (j < boundaryList.size()) {
+            if (boundaryList[j]->is_radiation() && j != i) {
+               Path *path2=pathList[boundaryList[j]->get_pathIndex(0)];
+               if (path2->lineIntersects(a,b)) {
+                  flip=true;
+                  break;
+               }
+            }
+            j++;
+         }
+
+         if (flip) {
+            prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3141: Radiation boundary block at line %d is not on the outside surface.\n",
+                                                   boundaryList[i]->get_startLine());
+            fail=true;
+         }
+      }
+      i++;
+   }
+
+   return fail;
+}
+
 // remove overlaps in paths
 void BoundaryDatabase::subdivide_paths ()
 {
@@ -6394,7 +6832,7 @@ void BoundaryDatabase::subdivide_paths ()
    while (i < pathList.size()) {
       long unsigned int j=0;
       while (j < pathList.size()) {
-         if (i != j) pathList[i]->subdivide3D(pathList[j]);
+         if (i != j) pathList[i]->subdivide(pathList[j]);
          j++;
       }
       i++;
@@ -6431,12 +6869,12 @@ bool BoundaryDatabase::is_mixed_mode ()
    return false;
 }
 
-bool BoundaryDatabase::create2Dmeshes (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubMeshes)
+bool BoundaryDatabase::create2Dmeshes (int order, ParMesh *mesh3D, vector<ParSubMesh> *parSubMeshesPort)
 {
    bool fail=false;
    long unsigned int i=0;
    while (i < portList.size()) {
-      if (portList[i]->create2Dmesh(order,mesh3D,parSubMeshes,i,tol)) fail=true;
+      if (portList[i]->create2Dmesh(order,mesh3D,parSubMeshesPort,i,tol)) fail=true;
       i++;
    }
    return fail;
@@ -6638,11 +7076,11 @@ bool BoundaryDatabase::createDefaultBoundary (struct projectData *projData, Mesh
    return false;
 }
 
-void BoundaryDatabase::savePortMeshes (MeshMaterialList *materials, vector<ParSubMesh> *parSubMeshes)
+void BoundaryDatabase::savePortMeshes (MeshMaterialList *materials, vector<ParSubMesh> *parSubMeshesPort)
 {
    long unsigned int i=0;
    while (i < portList.size()) {
-      portList[i]->saveMesh(materials,&tempDirectory,&((*parSubMeshes)[i]));
+      portList[i]->saveMesh(materials,&tempDirectory,&((*parSubMeshesPort)[i]));
       i++;
    }
 }
@@ -6672,7 +7110,9 @@ Boundary* BoundaryDatabase::get_matchBoundary (double x1, double y1, double z1, 
 {
    long unsigned int i=0;
    while (i < boundaryList.size()) {
-      if (boundaryList[i]->is_point_inside(x1,y1,z1) && boundaryList[i]->is_point_inside(x2,y2,z2)) return boundaryList[i];
+      if (!boundaryList[i]->is_default_boundary()) {
+         if (boundaryList[i]->is_point_inside(x1,y1,z1) && boundaryList[i]->is_point_inside(x2,y2,z2)) return boundaryList[i];
+      }
       i++;
    }
    return nullptr;
@@ -6689,16 +7129,16 @@ bool BoundaryDatabase::createPortDirectories ()
    return fail;
 }
 
-void BoundaryDatabase::extract2Dmesh(ParMesh *pmesh, vector<ParSubMesh> *parSubMeshes)
+void BoundaryDatabase::extract2Dmesh(ParMesh *pmesh, vector<ParSubMesh> *parSubMeshesPort)
 {
    long unsigned int i=0;
    while (i < portList.size()) {
-      portList[i]->extract2Dmesh(pmesh,parSubMeshes);
+      portList[i]->extract2Dmesh(pmesh,parSubMeshesPort);
       i++;
    }
 }
 
-bool BoundaryDatabase::solvePorts (int mesh_order, ParMesh *pmesh, vector<ParSubMesh> *parSubMeshes, double frequency, MeshMaterialList *meshMaterials,
+bool BoundaryDatabase::solvePorts (int mesh_order, ParMesh *pmesh, vector<ParSubMesh> *parSubMeshesPort, double frequency, MeshMaterialList *meshMaterials,
                                    struct projectData *projData, GammaDatabase *gammaDatabase)
 {
    bool fail=false;
@@ -6709,9 +7149,9 @@ bool BoundaryDatabase::solvePorts (int mesh_order, ParMesh *pmesh, vector<ParSub
    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
    MPI_Comm MPI_PORT_COMM;
 
-   if (create2Dmeshes(mesh_order,pmesh,parSubMeshes)) {fail=true; return fail;}
+   if (create2Dmeshes(mesh_order,pmesh,parSubMeshesPort)) {fail=true; return fail;}
 
-   savePortMeshes(meshMaterials,parSubMeshes);
+   savePortMeshes(meshMaterials,parSubMeshesPort);
    if (rank == 0) {
       save2Dsetups(projData,frequency,gammaDatabase);
       saveModeFiles (projData);
@@ -7032,6 +7472,30 @@ void BoundaryDatabase::calculateSplits ()
    }
 }
 
+bool BoundaryDatabase::calculateAcceptedPower (int Sport, complex<double> *acceptedPower)
+{
+   int portCount=get_SportCount();
+   complex<double> powerIn=0;
+   complex<double> powerOut=0;
+
+   Mode *mode=getDrivingMode(Sport);
+   if (!mode) return true;
+
+   // loop through the ports
+   int i=1;
+   while (i <= portCount) {
+      if (i == Sport) powerIn+=mode->calculatePowerIn(i);
+      if (i != Sport) powerOut+=mode->calculatePowerOut(i);
+      i++;
+   } 
+
+   // accepted power
+   // The accepted power is either dissipated or radiated.
+   *acceptedPower=powerIn-powerOut;
+
+   return false;
+}
+
 PetscErrorCode BoundaryDatabase::calculateS (Result *result)
 {
    PetscErrorCode ierr=0;
@@ -7245,11 +7709,11 @@ void BoundaryDatabase::transfer_3Dsolution_3Dgrids_to_2Dgrids(fem3D *fem)
    }
 }
 
-void BoundaryDatabase::save2DParaView(vector<ParSubMesh> *parSubMeshes, struct projectData *projData, double frequency, bool add_extension)
+void BoundaryDatabase::save2DParaView(vector<ParSubMesh> *parSubMeshesPort, struct projectData *projData, double frequency, bool add_extension)
 {
    long unsigned int i=0;
    while (i < portList.size()) {
-      portList[i]->save2DParaView(&((*parSubMeshes)[i]),projData,frequency,add_extension);
+      portList[i]->save2DParaView(&((*parSubMeshesPort)[i]),projData,frequency,add_extension);
       i++;
    }
 }
@@ -7263,20 +7727,20 @@ void BoundaryDatabase::save3DParaView(ParMesh *pmesh, struct projectData *projDa
    }
 }
 
-void BoundaryDatabase::save2DSolutionParaView(vector<ParSubMesh> *parSubMeshes, struct projectData *projData, double frequency, int drivingSport, bool add_extension)
+void BoundaryDatabase::save2DSolutionParaView(vector<ParSubMesh> *parSubMeshesPort, struct projectData *projData, double frequency, int drivingSport, bool add_extension)
 {
    long unsigned int i=0;
    while (i < portList.size()) {
-      portList[i]->save2DSolutionParaView(&((*parSubMeshes)[i]),projData,frequency,drivingSport,add_extension);
+      portList[i]->save2DSolutionParaView(&((*parSubMeshesPort)[i]),projData,frequency,drivingSport,add_extension);
       i++;
    }
 }
 
-void BoundaryDatabase::save2DModalParaView(vector<ParSubMesh> *parSubMeshes, struct projectData *projData, double frequency, bool add_extension)
+void BoundaryDatabase::save2DModalParaView(vector<ParSubMesh> *parSubMeshesPort, struct projectData *projData, double frequency, bool add_extension)
 {
    long unsigned int i=0;
    while (i < portList.size()) {
-      portList[i]->save2DModalParaView(&((*parSubMeshes)[i]),projData,frequency,add_extension);
+      portList[i]->save2DModalParaView(&((*parSubMeshesPort)[i]),projData,frequency,add_extension);
       i++;
    }
 }
@@ -7290,15 +7754,16 @@ void BoundaryDatabase::buildGrids (fem3D *fem)
    build2DSolutionGrids();
 }
 
-bool BoundaryDatabase::solve2Dports (ParMesh *pmesh, vector<ParSubMesh> *parSubMeshes, struct projectData *projData, double frequency, MeshMaterialList *meshMaterials, GammaDatabase *gammaDatabase)
+bool BoundaryDatabase::solve2Dports (ParMesh *pmesh, vector<ParSubMesh> *parSubMeshesPort, struct projectData *projData,
+                                     double frequency, MeshMaterialList *meshMaterials, GammaDatabase *gammaDatabase)
 {
    bool fail=false;
    PetscMPIInt rank;
    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
 
    // extract 2D meshes for the ports from the 3D mesh
-   parSubMeshes->clear();
-   extract2Dmesh(pmesh,parSubMeshes);
+   parSubMeshesPort->clear();
+   extract2Dmesh(pmesh,parSubMeshesPort);
 
    // solve 2D ports
 
@@ -7322,12 +7787,12 @@ bool BoundaryDatabase::solve2Dports (ParMesh *pmesh, vector<ParSubMesh> *parSubM
    if (rank == 0 && createPortDirectories()) fail=true;
    if (fail) return fail;
 
-   if (solvePorts(projData->mesh_order,pmesh,parSubMeshes,frequency,meshMaterials,projData,gammaDatabase)) fail=true;
+   if (solvePorts(projData->mesh_order,pmesh,parSubMeshesPort,frequency,meshMaterials,projData,gammaDatabase)) fail=true;
    if (fail) return fail;
 
    build2Dgrids();
 
-   save2DParaView(parSubMeshes,projData,frequency,false);
+   save2DParaView(parSubMeshesPort,projData,frequency,false);
 
    return fail;
 }
@@ -7538,6 +8003,263 @@ Port* BoundaryDatabase::get_port (Mode *mode)
    return port;
 }
 
+bool BoundaryDatabase::hasRadiationBoundary ()
+{
+   long unsigned int i=0;
+   while (i < boundaryList.size()) {
+      if (boundaryList[i]->is_radiation()) return true;
+      i++;
+   }
+   return false;
+}
+
+bool BoundaryDatabase::calculateRadiationCurrents (ParMesh *pmesh, struct projectData *projData, Vector center, double radiation_beta, double lengthLimit,
+                              ParGridFunction *gridReE, ParGridFunction *gridImE, ParGridFunction *gridReH, ParGridFunction *gridImH)
+{
+   bool fail=false;
+
+   long unsigned int i=0;
+   while (i < boundaryList.size()) {
+      if (boundaryList[i]->calculateRadiationCurrents(pmesh,projData,center,radiation_beta,lengthLimit,gridReE,gridImE,gridReH,gridImH)) fail=true;
+      i++;
+   }
+
+   return fail;
+}
+
+void BoundaryDatabase::collectRadiationCurrents ()
+{
+   PetscMPIInt rank,size;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+   MPI_Comm_size(PETSC_COMM_WORLD, &size);
+
+   // collect at rank 0
+   long unsigned int i=0;
+   while (i < boundaryList.size()) {
+      boundaryList[i]->collectRadiationCurrents(&radiationCurrents);
+      i++;
+   }
+
+   if (rank == 0) {
+      int count=radiationCurrents.size();
+      int i=1;
+      while (i < size) {
+         MPI_Send(&count,1,MPI_INT,i,2000,PETSC_COMM_WORLD);
+         long unsigned int j=0;
+         while (j < radiationCurrents.size()) {
+            radiationCurrents[j]->sendTo(i);
+            j++;
+         }
+         i++;
+      }
+   } else {
+      int count;
+      MPI_Recv(&count,1,MPI_INT,0,2000,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+      long unsigned int j=0;
+      while (j < (long unsigned int)count) {
+         Current *current=new Current();
+         current->recvFrom(0);
+         radiationCurrents.push_back(current);
+         j++;
+      }
+   }
+}
+
+void BoundaryDatabase::deleteRadiationCurrents ()
+{
+   long unsigned int i=0;
+   while (i < boundaryList.size()) {
+      boundaryList[i]->deleteRadiationCurrents();
+      i++;
+   }
+
+   i=0;
+   while (i < radiationCurrents.size()) {
+      delete radiationCurrents[i];
+      i++;
+   }
+
+   radiationCurrents.clear();
+}
+
+// Vector r is the far-field point; vecr is the vector location and r is the magnitude
+// Vector rp is the point on the antenna; vecrp is the vector location and rp is the magnitude
+//
+// variables and formulas follow:
+// Constantine Balanis, Advanced Engineering Electromagnetics, John Wiley and Sons, 1989, pp. 288-289.
+void BoundaryDatabase::calculateFarField (double r, Vector center, double radiation_beta, double wave_impedance,
+                                          vector<OPEMpoint *> *pointList, long unsigned int start, long unsigned int stop)
+{
+   complex<double> Ntheta,Nphi,Ltheta,Lphi;
+   complex<double> Jx,Jy,Jz,Mx,My,Mz;
+   double cos_psi;
+   complex<double> exp_rp;
+
+   double inv_wave_impedance=1.0/wave_impedance;
+
+   // pre-calculation to speed up inner loop
+   vector<double> xp,yp,zp,rp,inv_rp;
+   long unsigned int k=0;
+   while (k < radiationCurrents.size()) {
+      xp.push_back(radiationCurrents[k]->get_x()-center(0));
+      yp.push_back(radiationCurrents[k]->get_y()-center(1));
+      zp.push_back(radiationCurrents[k]->get_z()-center(2));
+      rp.push_back(sqrt(xp[k]*xp[k]+yp[k]*yp[k]+zp[k]*zp[k]));
+      inv_rp.push_back(1.0/rp[k]);
+      k++;
+   }
+
+   complex<double> j=complex<double>(0,1);
+   long unsigned int i=start;
+   while (i < stop) {
+
+      // get the far-field point
+      double x=(*pointList)[i]->get_x()-center(0);
+      double y=(*pointList)[i]->get_y()-center(1);
+      double z=(*pointList)[i]->get_z()-center(2);
+      r=sqrt(pow(x,2)+pow(y,2)+pow(z,2)); // should equal the passed r value, ToDo: check
+      double inv_r=1.0/r;
+
+      double phi=atan2(y,x);
+      double theta=acos(z/r);
+
+      double cos_theta=cos(theta);
+      double sin_theta=sin(theta);
+      double cos_phi=cos(phi);
+      double sin_phi=sin(phi);
+
+      complex<double> exp_r=j*radiation_beta*exp(-j*radiation_beta*r)/(4*M_PI*r);
+
+      complex<double> Ephi=0;
+      complex<double> Etheta=0;
+      complex<double> Hphi=0;
+      complex<double> Htheta=0;
+
+      // inner loop simplified for speed
+      long unsigned int k=0;
+      while (k < radiationCurrents.size()) {
+
+         Jx=radiationCurrents[k]->get_Jx();
+         Jy=radiationCurrents[k]->get_Jy();
+         Jz=radiationCurrents[k]->get_Jz();
+
+         Mx=radiationCurrents[k]->get_Mx();
+         My=radiationCurrents[k]->get_My();
+         Mz=radiationCurrents[k]->get_Mz();
+
+         // psi is angle between r and rp
+         // only cos(psi) is needed
+         cos_psi=(x*xp[k]+y*yp[k]+z*zp[k])*inv_r*inv_rp[k];
+
+         exp_rp=exp(j*radiation_beta*rp[k]*cos_psi)*radiationCurrents[k]->get_area();
+
+         Ntheta=Jx*cos_theta*cos_phi+Jy*cos_theta*sin_phi-Jz*sin_theta;
+         Nphi=-Jx*sin_phi+Jy*cos_phi;
+         Ltheta=Mx*cos_theta*cos_phi+My*cos_theta*sin_phi-Mz*sin_theta;
+         Lphi=-Mx*sin_phi+My*cos_phi;
+
+         Etheta-=(Lphi+wave_impedance*Ntheta)*exp_rp;
+         Ephi+=(Ltheta-wave_impedance*Nphi)*exp_rp;
+         Htheta+=(Nphi-Ltheta*inv_wave_impedance)*exp_rp;
+         Hphi-=(Ntheta+Lphi*inv_wave_impedance)*exp_rp;
+
+         k++;
+      }
+      (*pointList)[i]->set_fields(exp_r*Ephi,exp_r*Etheta,exp_r*Hphi,exp_r*Htheta);
+      i++;
+   }
+}
+
+void BoundaryDatabase::calculateFarField (double r, Vector center, double radiation_beta, double wave_impedance, vector<OPEMpoint *> *pointList)
+{
+   PetscMPIInt rank,size;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+   MPI_Comm_size(PETSC_COMM_WORLD, &size);
+
+   if (rank == 0) {
+      int chunk=pointList->size()/size;
+      if (chunk == 0) chunk=1;
+      vector<int> start,stop;
+      start.push_back(0);
+      stop.push_back(chunk);
+
+      int i=1;
+      while (i < size) {
+         int nextstart=start[i-1]+chunk;
+         if (nextstart > (int)pointList->size()) nextstart=pointList->size();
+
+         int nextstop=nextstart+chunk;
+         if (nextstop > (int)pointList->size()) nextstop=pointList->size();
+          
+         start.push_back(nextstart);
+         stop.push_back(nextstop);
+
+         i++;
+      }
+      stop[size-1]=pointList->size();
+
+      // distribute the work
+      i=1;
+      while (i < size) {
+         MPI_Send(&(start[i]),1,MPI_INT,i,100,PETSC_COMM_WORLD);
+         MPI_Send(&(stop[i]),1,MPI_INT,i,101,PETSC_COMM_WORLD);
+         i++;
+      }
+
+      // do the local work
+      calculateFarField(r,center,radiation_beta,wave_impedance,pointList,start[0],stop[0]);
+
+      // collect the data
+      i=1;
+      while (i < size) {
+         int j=start[i];
+         while (j < stop[i]) {
+            (*pointList)[j]->recvFieldsFrom(i);
+            j++;
+         }
+         i++;
+      }
+
+   } else {
+
+      // get the assigned range to calculate
+      int start,stop;
+      MPI_Recv(&start,1,MPI_INT,0,100,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+      MPI_Recv(&stop,1,MPI_INT,0,101,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+      // do the work
+      calculateFarField(r,center,radiation_beta,wave_impedance,pointList,start,stop);
+
+      // send the results to rank 0
+      int i=start;
+      while (i < stop) {
+         (*pointList)[i]->sendFieldsTo(0);
+         i++;
+      }
+   }
+
+   // distribute across ranks
+
+   if (rank == 0) {
+      int i=1;
+      while (i < size) {
+         long unsigned int j=0;
+         while (j < pointList->size()) {
+            (*pointList)[j]->sendFieldsTo(i);
+            j++;
+         }
+         i++;
+      }
+   } else {
+      long unsigned int j=0;
+      while (j < pointList->size()) {
+         (*pointList)[j]->recvFieldsFrom(0);
+         j++;
+      }
+   }
+}
+
 BoundaryDatabase::~BoundaryDatabase ()
 {
    long unsigned int i=0;
@@ -7575,5 +8297,13 @@ BoundaryDatabase::~BoundaryDatabase ()
       }
       i++;    
    }
+
+   i=0;
+   while (i < radiationCurrents.size()) {
+      delete radiationCurrents[i];
+      radiationCurrents[i]=nullptr;
+      i++;
+   }
+
 }
 

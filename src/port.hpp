@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -38,6 +38,7 @@
 #include "sourcefile.hpp"
 #include "misc.hpp"
 #include <lapacke.h>
+#include "pattern.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -130,10 +131,12 @@ class Boundary
       vector<keywordPair *> pathNameList;
       vector<long unsigned int> pathIndexList;
       vector<bool> reverseList;
+      Vector normal;                       // normal facing outward from the 3D volume
+      Path *outline=nullptr;               // outlien of the boundary
       int attribute=-1;                    // attribute assigned to the mesh indicating this boundary
       bool assignedToMesh=false;           // keeps track of whether the boundary was successfully assigned to the mesh
-      Path *rotated=nullptr;               // rotated path boundary for ports and some geometrical operations
       bool is_default;
+      vector<Current *> radiationCurrents; // currents for radiation boundaries
    public:
       Boundary (int,int);
       ~Boundary ();
@@ -151,6 +154,9 @@ class Boundary
       int get_pathIndex (int i) {return pathIndexList[i];}
       bool name_is_loaded () {return name.is_loaded();}
       int get_name_lineNumber () {return name.get_lineNumber();}
+      int get_wave_impedance_lineNumber () {return wave_impedance.get_lineNumber();}
+      Vector get_normal () {return normal;}
+      void set_normal (double nx, double ny, double nz) {normal(0)=nx; normal(1)=ny; normal(2)=nz;}
       void set_name (string name_) {name.set_value(name_);}
       void set_type (string type_) {type.set_value(type_);}
       void set_material (string material_) {material.set_value(material_);}
@@ -160,7 +166,6 @@ class Boundary
       string get_type () {return type.get_value();}
       string get_material () {return material.get_value();}
       double get_wave_impedance () {return wave_impedance.get_dbl_value();}
-      Path* get_rotated () {return rotated;}
       string get_pathName (long unsigned int i) {return pathNameList[i]->get_value();}
       int get_pathName_lineNumber (long unsigned int i) {return pathNameList[i]->get_lineNumber();}
       bool get_reverse (long unsigned int i) {return reverseList[i];}
@@ -175,7 +180,6 @@ class Boundary
       bool is_line ();
       bool has_attribute (int attribute_) {if (attribute == attribute_) return true; return false;}
       bool merge (vector<Path *> *);
-      bool createRotated (vector<Path *> *, string);
       bool is_point_inside (double, double, double);
       bool is_triangleInside (DenseMatrix *);
       bool is_overlapPath (vector<Path *> *, Path *);
@@ -183,6 +187,10 @@ class Boundary
       void addImpedanceIntegrator (double, double, ParMesh *, ParBilinearForm *,
                                    MaterialDatabase *, vector<Array<int> *> &,
                                    vector<ConstantCoefficient *> &, bool);
+      bool calculateRadiationCurrents (ParMesh *, struct projectData *, Vector, double, double,
+                                        ParGridFunction *, ParGridFunction *, ParGridFunction *, ParGridFunction *);
+      void collectRadiationCurrents (vector<Current *> *);
+      void deleteRadiationCurrents ();
       void print();
       bool snapToMeshBoundary (vector<Path *> *, Mesh *, string);
 };
@@ -347,6 +355,7 @@ class FieldSet
       double get_beta () {return beta;}
       complex<double> get_voltage () {return voltage;}
       complex<double> get_current () {return current;}
+      complex<double> get_Pz () {return Pz;}
       complex<double> get_impedance () {return impedance;}
       void set_alpha(double alpha_) {alpha=alpha_;}
       void set_beta(double beta_) {beta=beta_;}
@@ -403,6 +412,7 @@ class Mode
       complex<double> get_impedance () {return fields.get_impedance();}
       complex<double> get_voltage () {return fields.get_voltage();}
       complex<double> get_current () {return fields.get_current();}
+      complex<double> get_Pz () {return fields.get_Pz();}
       complex<double> get_Cp (int i) {return Cp[i];}
       complex<double> get_Cm (int i) {return Cm[i];}
       complex<double> get_weight (int i) {return weight[i];}
@@ -449,6 +459,8 @@ class Mode
       void calculateSplits (ParFiniteElementSpace *, ParGridFunction *, ParGridFunction *, ParGridFunction *,
                             ParGridFunction *, ParGridFunction *, ParGridFunction *, ParGridFunction *, ParGridFunction *, 
                             Vector);
+      complex<double> calculatePowerIn (int);
+      complex<double> calculatePowerOut (int);
       void set_net_is_updated () {net_is_updated=true;}
       bool get_net_is_updated () {return net_is_updated;}
       void transfer_2Dsolution_2Dgrids_to_3Dgrids ();
@@ -530,7 +542,8 @@ class Port
       size_t t_size, z_size;
       string meshFilename="";
       string modesFilename="";
-      Path *rotated=nullptr;                       // rotated path boundary for the port
+      Path *outline=nullptr;                       // port outline for 3D operations
+      Path *rotated_outline=nullptr;               // port outline rotated to x-y plane for 2D operations
       Vector normal;                               // normal facing outward from the 3D volume
       Vector rotated_normal;                       // outward facing normal after rotation for the rotated 2D mesh
       lapack_complex_double* Ti;                   // for conversion between modal and line currents
@@ -564,7 +577,8 @@ class Port
       int get_attribute (int);
       int get_last_attribute (int);
       int get_adjacent_element_attribute (int);
-      Path* get_rotated () {return rotated;}
+      Path* get_outline () {return outline;}
+      Path* get_rotated_outline () {return rotated_outline;}
       int get_pathIndex (int i) {return pathIndexList[i];}
       void push_portAttribute (PortAttribute *portAttribute) {attributeList.push_back(portAttribute);};
       void set_assignedToMesh () {assignedToMesh=true;}
@@ -669,6 +683,7 @@ class BoundaryDatabase
       string version_name="#OpenParEMports";
       string version_value="1.0";
       string drivingSetName="";
+      vector<Current *> radiationCurrents;     //  Aggregated list from Boundary and copied across ranks
    public:
       ~BoundaryDatabase();
       void set_tempDirectory(string tempDirectory_) {tempDirectory=tempDirectory_;}
@@ -677,6 +692,8 @@ class BoundaryDatabase
       string get_drivingSetName () {return drivingSetName;}
       void assignAttributes (Mesh *);
       Boundary* get_defaultBoundary ();
+      long unsigned int get_boundaryListSize() {return boundaryList.size();}
+      Boundary* get_boundary (long unsigned int i) {return boundaryList[i];}
       bool markMeshBoundaries (Mesh *mesh);
       bool createDefaultBoundary (struct projectData *, Mesh *, MaterialDatabase *, BoundaryDatabase *);
       bool inBlocks (int);
@@ -689,6 +706,7 @@ class BoundaryDatabase
       bool checkSportNumbering ();
       bool check_scale (Mesh *, int);
       bool check_overlaps ();
+      bool alignRadiationNormals ();
       void subdivide_paths ();
       void print ();
       bool is_line ();
@@ -726,6 +744,7 @@ class BoundaryDatabase
       void fillIntegrationPoints ();
       void calculateLineIntegrals (ParMesh *, fem3D *);
       void alignDirections (ParMesh *, fem3D *);
+      bool calculateAcceptedPower (int, complex<double> *);
       PetscErrorCode calculateS (Result *);
       void build2Dgrids ();
       void build2DModalGrids ();
@@ -752,6 +771,14 @@ class BoundaryDatabase
       bool has_Ti ();
       bool has_Tv ();
       Port* get_port (Mode *);
+      bool hasRadiationBoundary ();
+      bool calculateRadiationCurrents (ParMesh *, struct projectData *, Vector, double, double,
+                                       ParGridFunction *, ParGridFunction *, ParGridFunction *, ParGridFunction *);
+      void collectRadiationCurrents ();
+      void deleteRadiationCurrents ();
+      void calculateFarField (double, Vector, double, double, vector<OPEMpoint *> *, long unsigned int, long unsigned int);
+      void calculateFarField (double, Vector, double, double, vector<OPEMpoint *> *);
+
 };
 
 #endif

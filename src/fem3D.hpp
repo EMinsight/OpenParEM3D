@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -37,6 +37,7 @@
 #include "project.h"
 #include "csr.h"
 #include "OPEM_L2ZZErrorEstimator.hpp"
+#include "pattern.hpp"
 
 using namespace std;
 using namespace mfem;
@@ -127,6 +128,10 @@ class fem3D {
       Mat Ms; 
       vector<complex<double>> SportZoList;
 
+      double radius;                            // radius of the sphere for far-field calculations
+      double radiation_beta;                    // propagation constant for the volume surrounding the antenna in the far field
+      double wave_impedance;                    // wave impedance for the volume surrounding the antenna in the far field
+
    public:
       ~fem3D();
       void set_data(ParMesh **, struct projectData *, double);
@@ -172,14 +177,16 @@ class fem3D {
       ParGridFunction* get_gridImE () {return gridImE;}
       ParGridFunction* get_gridReH () {return gridReH;}
       ParGridFunction* get_gridImH () {return gridImH;}
-//      ParGridFunction* get_gridReEz () {return gridReEz;}
-//      ParGridFunction* get_gridImEz () {return gridImEz;}
-//      ParGridFunction* get_gridReHz () {return gridReHz;}
-//      ParGridFunction* get_gridImHz () {return gridImHz;}
+      //ParGridFunction* get_gridReEz () {return gridReEz;}
+      //ParGridFunction* get_gridImEz () {return gridImEz;}
+      //ParGridFunction* get_gridReHz () {return gridReHz;}
+      //ParGridFunction* get_gridImHz () {return gridImHz;}
       PetscErrorCode build_Mc_Ms (double, BoundaryDatabase *, vector<DifferentialPair*> *, int);
       Mat* get_Mc () {return &Mc;}
       Mat* get_Ms () {return &Ms;}
       vector<complex<double>>* get_SportZoList () {return &SportZoList;}
+      void calculateRadiationCurrents (BoundaryDatabase *);
+      void calculateRadiationPatterns (int, complex<double>, int, BoundaryDatabase *, PatternDatabase *);
 };
 
 #endif

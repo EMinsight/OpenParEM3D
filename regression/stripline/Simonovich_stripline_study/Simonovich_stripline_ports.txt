@@ -11,8 +11,8 @@
 //    upper_thickness=0.000301
 //    lower_material=core
 //    lower_thickness=0.0003048
-//    left_side_gap=0.00486
-//    right_side_gap=0.00486
+//    left_side_gap=0.001
+//    right_side_gap=0.001
 //    trace_thickness=3.175e-05
 //    trace_width=0.0002794
 //    trace_etch_angle=60
@@ -63,19 +63,19 @@ EndPath
 
 Path
    name=port1
-   point=(-0.0049997,0,0)
-   point=(-0.0049997,0.0006058,0)
-   point=(0.0049997,0.0006058,0)
-   point=(0.0049997,0,0)
+   point=(-0.0011397,0,0)
+   point=(-0.0011397,0.0006058,0)
+   point=(0.0011397,0.0006058,0)
+   point=(0.0011397,0,0)
    closed=true
 EndPath
 
 Path
    name=port2
-   point=(-0.0049997,0,0.001)
-   point=(-0.0049997,0.0006058,0.001)
-   point=(0.0049997,0.0006058,0.001)
-   point=(0.0049997,0,0.001)
+   point=(-0.0011397,0,0.001)
+   point=(-0.0011397,0.0006058,0.001)
+   point=(0.0011397,0.0006058,0.001)
+   point=(0.0011397,0,0.001)
    closed=true
 EndPath
 
@@ -183,10 +183,10 @@ EndBoundary
 
 Path
    name=ground_plane
-   point=(-0.0049997,0,0)
-   point=(-0.0049997,0,0.001)
-   point=(0.0049997,0,0.001)
-   point=(0.0049997,0,0)
+   point=(-0.0011397,0,0)
+   point=(-0.0011397,0,0.001)
+   point=(0.0011397,0,0.001)
+   point=(0.0011397,0,0)
    closed=true
 EndPath
 
@@ -199,10 +199,10 @@ EndBoundary
 
 Path
    name=upper_groundplane
-   point=(-0.0049997,0.0006058,0)
-   point=(-0.0049997,0.0006058,0.001)
-   point=(0.0049997,0.0006058,0.001)
-   point=(0.0049997,0.0006058,0)
+   point=(-0.0011397,0.0006058,0)
+   point=(-0.0011397,0.0006058,0.001)
+   point=(0.0011397,0.0006058,0.001)
+   point=(0.0011397,0.0006058,0)
    closed=true
 EndPath
 

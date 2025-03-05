@@ -47,6 +47,7 @@ fi
 
 # delete old files to ensure no stale data if something goes wrong
 rm -f $projectName"_results.csv"
+rm -f $projectName"_FarField_results.csv"
 rm -f $projectName"_results.log"
 
 # run the job
@@ -61,10 +62,23 @@ then
    exit 1
 fi
 
+hasFarField=0
+if [[ -f $projectName"_FarField_results.csv" ]]
+then
+   hasFarField=1
+fi
+
 # run the tests
 
-echo "process3D.sh: process3D "$projectFile" "$projectName"_test_cases.csv"" "$projectName"_results.csv"" > "$projectName"_results.log"
-process3D $projectFile $projectName"_test_cases.csv" $projectName"_results.csv" > $projectName"_results.log"
+if [ $hasFarField -eq 1 ]
+then
+   echo "process3D.sh: process3D "$projectFile" "$projectName"_test_cases.csv"" "$projectName"_results.csv"" "$projectName"_FarField_results.csv"" > "$projectName"_results.log"
+   process3D $projectFile $projectName"_test_cases.csv" $projectName"_results.csv" $projectName"_FarField_results.csv" > $projectName"_results.log"
+else
+   echo "process3D.sh: process3D "$projectFile" "$projectName"_test_cases.csv"" "$projectName"_results.csv"" > "$projectName"_results.log"
+   process3D $projectFile $projectName"_test_cases.csv" $projectName"_results.csv" > $projectName"_results.log"
+fi
+
 if [[ ! ${PIPESTATUS[0]} -eq 0 ]]
 then
    echo "ERROR: Processing failed while auditing."

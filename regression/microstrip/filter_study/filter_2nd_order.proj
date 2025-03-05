@@ -3,8 +3,8 @@
 project.save.fields            false
 
 mesh.file                      filter.msh
+mesh.refinement.fraction       0.0025
 mesh.quality.limit             1e6
-mesh.refinement.fraction       0.0035
 
 mesh.order                     2
 
@@ -19,14 +19,13 @@ materials.default.boundary     copper
 
 refinement.frequency           plan 
 refinement.iteration.min       1
-refinement.iteration.max       20
+refinement.iteration.max       30 // 20
 refinement.required.passes     1
-refinement.relative.tolerance  0.1
-refinement.absolute.tolerance  0.7e-06
+refinement.relative.tolerance  0.02
+refinement.absolute.tolerance  2e-06 // 1e-06
 refinement.variable            SandH
 
 frequency.plan.linear          0.5e9,4.5e9,0.05e9
-frequency.plan.point.refine    4e9
 frequency.plan.point.refine    3e9
 
 reference.impedance            50
@@ -34,7 +33,7 @@ reference.impedance            50
 solution.temperature           20
 solution.2D.tolerance          1e-08
 solution.3D.tolerance          1e-14
-solution.iteration.limit       100000
+solution.iteration.limit       1000000
 solution.modes.buffer          0
 solution.accurate.residual     false
 solution.shift.invert          true

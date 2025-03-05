@@ -20,8 +20,8 @@ refinement.frequency           plan
 refinement.iteration.min       5
 refinement.iteration.max       100
 refinement.required.passes     1
-refinement.relative.tolerance  0.01
-refinement.absolute.tolerance  1e-08
+refinement.relative.tolerance  0.001
+refinement.absolute.tolerance  1e-07
 refinement.variable            SandH
 
 frequency.plan.point           26e9

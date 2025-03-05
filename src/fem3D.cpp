@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -57,6 +57,9 @@ void fem3D::set_data (ParMesh **pmesh_, struct projectData *projData_, double fr
    pmesh=pmesh_;
    projData=projData_;
    frequency=frequency_;
+   radius=0;
+   radiation_beta=0;
+   wave_impedance=0;
 }
 
 void fem3D::build_fe_spaces ()
@@ -818,6 +821,339 @@ void fem3D::printElementVertices ()
    }
 }
 
+// complex(Re_hpv,Im_hpv) -> v
+// copy and convert data from partitions on ParFiniteElementSpace to partitions on Vec
+void hypreParVectorToVec (HypreParVector *Re_hpv, HypreParVector *Im_hpv, Vec *v)
+{
+   Vector *Re_gv=Re_hpv->GlobalVector();
+   Vector *Im_gv=Im_hpv->GlobalVector();
+
+   PetscInt i,low,high;
+   VecGetOwnershipRange(*v,&low,&high);
+
+   PetscInt *ixvals;
+   PetscMalloc((high-low)*sizeof(PetscInt),&ixvals);
+
+   i=low;
+   while (i < high) {
+      ixvals[i-low]=i;
+      i++;
+   }
+
+   PetscScalar *xvals;
+   PetscMalloc((high-low)*sizeof(PetscScalar),&xvals);
+
+   i=low;
+   while (i < high) {
+      xvals[i-low]=Re_gv->Elem(i)+PETSC_i*Im_gv->Elem(i);
+      i++;
+   }
+
+   VecSetValues(*v,high-low,ixvals,xvals,INSERT_VALUES);
+
+   VecAssemblyBegin(*v);
+   VecAssemblyEnd(*v);
+
+   delete Re_gv;
+   delete Im_gv;
+   PetscFree(ixvals);
+   PetscFree(xvals);
+}
+
+// v -> complex(Re_hpv,Im_hpv) 
+// copy and convert data from partitions on Vec to partitions on ParFiniteElementSpace
+void vecToHypreParVector (Vec *v, HypreParVector *Re_hpv, HypreParVector *Im_hpv)
+{
+   PetscMPIInt rank,size;
+   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
+   MPI_Comm_size(PETSC_COMM_WORLD, &size);
+
+   PetscInt i,v_size,low,high;
+
+   VecGetSize(*v,&v_size);
+   VecGetOwnershipRange(*v,&low,&high);
+
+   Vector Re_global_v,Im_global_v;
+   Re_global_v.SetSize(v_size);
+   Im_global_v.SetSize(v_size);
+
+   PetscInt *ixvals;
+   PetscMalloc((high-low)*sizeof(PetscInt),&ixvals);
+
+   i=low;
+   while (i < high) {
+      ixvals[i-low]=i;
+      i++;
+   }
+
+   PetscScalar *xvals;
+   PetscMalloc((high-low)*sizeof(PetscScalar),&xvals);
+
+   VecGetValues(*v,high-low,ixvals,xvals);
+
+   // collect at zero
+   if (rank == 0) {
+      int i=low;
+      while (i < high) {
+         Re_global_v[i]=real(xvals[i-low]);
+         Im_global_v[i]=imag(xvals[i-low]);
+         i++;
+      }
+
+      i=1;
+      while (i < size) {
+         int count=0;
+         MPI_Recv(&count,1,MPI_INT,i,300,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+         int j=0;
+         while (j < count) {
+            int location=0;
+            double transfer_real=0;
+            double transfer_imag=0;
+            MPI_Recv(&location,1,MPI_INT,i,301,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+            MPI_Recv(&transfer_real,1,MPI_DOUBLE,i,302,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+            MPI_Recv(&transfer_imag,1,MPI_DOUBLE,i,303,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+            Re_global_v[location]=transfer_real;
+            Im_global_v[location]=transfer_imag;
+
+            j++;
+         }
+         i++;
+      }
+   } else {
+      int count=high-low;
+      MPI_Send(&count,1,MPI_INT,0,300,PETSC_COMM_WORLD);
+
+      int i=low;
+      while (i < high) {
+         int location=i;
+         double transfer_real=real(xvals[i-low]);
+         double transfer_imag=imag(xvals[i-low]);
+         MPI_Send(&location,1,MPI_INT,0,301,PETSC_COMM_WORLD);
+         MPI_Send(&transfer_real,1,MPI_DOUBLE,0,302,PETSC_COMM_WORLD);
+         MPI_Send(&transfer_imag,1,MPI_DOUBLE,0,303,PETSC_COMM_WORLD);
+         i++;
+      }
+   }
+
+   // send to other ranks
+   if (rank == 0) {
+      int i=1;
+      while (i < size) {
+         int j=0;
+         while (j < v_size) {
+            double transfer_real=Re_global_v.Elem(j);
+            double transfer_imag=Im_global_v.Elem(j);
+            MPI_Send(&transfer_real,1,MPI_DOUBLE,i,304,PETSC_COMM_WORLD);
+            MPI_Send(&transfer_imag,1,MPI_DOUBLE,i,305,PETSC_COMM_WORLD);
+            j++;
+         }
+         i++;
+      }
+   } else {
+      int i=0;
+      while (i < v_size) {
+         double transfer_real=0;
+         double transfer_imag=0;
+         MPI_Recv(&transfer_real,1,MPI_DOUBLE,0,304,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+         MPI_Recv(&transfer_imag,1,MPI_DOUBLE,0,305,PETSC_COMM_WORLD,MPI_STATUS_IGNORE);
+
+         Re_global_v[i]=transfer_real;
+         Im_global_v[i]=transfer_imag;
+         i++;
+      }
+   }
+
+   // transfer to the HypreParVectors
+   HYPRE_BigInt *hpv_offsets=Re_hpv->Partitioning();
+
+   i=hpv_offsets[0];
+   while (i < hpv_offsets[1]) {
+      Re_hpv->Elem(i-hpv_offsets[0])=Re_global_v.Elem(i);
+      Im_hpv->Elem(i-hpv_offsets[0])=Im_global_v.Elem(i);
+      i++;
+   }
+
+   PetscFree(ixvals);
+   PetscFree(xvals);
+}
+
+// This is a heavily modifed version of the OPEM_L2ZZErrorEstimator in OPEM_L2ZZErrorEstimator.cpp
+// to convert to operation with complex fields and to solve the complex problem with Petsc.  Switching 
+// here to reflect a change in the software license, which seems warranted given the extensive changes.
+// Testing shows that this produces the same results as OPEM_L2ZZErrorEstimator in OPEM_L2ZZErrorEstimator.cpp
+// but runs noticeably slower.  Leaving here for future reference.
+bool OPEM_L2ZZErrorEstimator (BilinearFormIntegrator &flux_integrator,
+                              const ParGridFunction &Re_x, const ParGridFunction &Im_x,
+                              ParFiniteElementSpace &smooth_flux_fes,
+                              ParFiniteElementSpace &flux_fes,
+                              Vector &errors,
+                              double norm_p, double solver_tol, int solver_max_it,
+                              double &finalResidualNorm)
+{
+   PetscErrorCode ierr=0;
+   bool fail=false;
+
+   // Compute fluxes in discontinuous space
+   GridFunction Re_flux(&flux_fes);
+   GridFunction Im_flux(&flux_fes);
+
+   Re_flux=0.0;
+   Im_flux=0.0;
+
+   ParFiniteElementSpace *Re_xfes=Re_x.ParFESpace();
+   ParFiniteElementSpace *Im_xfes=Im_x.ParFESpace();
+
+   Array<int> Re_xdofs,Re_fdofs,Im_xdofs,Im_fdofs;
+   Vector Re_el_x,Re_el_f,Im_el_x,Im_el_f;
+
+   int i=0;
+   while (i < Re_xfes->GetNE()) {
+      const DofTransformation* const Re_xtrans=Re_xfes->GetElementVDofs(i,Re_xdofs);
+      const DofTransformation* const Im_xtrans=Im_xfes->GetElementVDofs(i,Im_xdofs);
+
+      Re_x.GetSubVector(Re_xdofs,Re_el_x);
+      Im_x.GetSubVector(Im_xdofs,Im_el_x);
+
+      if (Re_xtrans) Re_xtrans->InvTransformPrimal(Re_el_x);
+      if (Im_xtrans) Im_xtrans->InvTransformPrimal(Im_el_x);
+
+      ElementTransformation *Re_Transf=Re_xfes->GetElementTransformation(i);
+      ElementTransformation *Im_Transf=Im_xfes->GetElementTransformation(i);
+
+      flux_integrator.ComputeElementFlux(*Re_xfes->GetFE(i),*Re_Transf,Re_el_x,*flux_fes.GetFE(i),Re_el_f,false);
+      flux_integrator.ComputeElementFlux(*Im_xfes->GetFE(i),*Im_Transf,Im_el_x,*flux_fes.GetFE(i),Im_el_f,false);
+
+      const DofTransformation* const Re_ftrans=flux_fes.GetElementVDofs(i,Re_fdofs);
+      const DofTransformation* const Im_ftrans=flux_fes.GetElementVDofs(i,Im_fdofs);
+
+      if (Re_ftrans) Re_ftrans->TransformPrimal(Re_el_f);
+      if (Im_ftrans) Im_ftrans->TransformPrimal(Im_el_f);
+
+      Re_flux.SetSubVector(Re_fdofs,Re_el_f);
+      Im_flux.SetSubVector(Im_fdofs,Im_el_f);
+
+      i++;
+   }
+
+   // Assemble the linear system for L2 projection into the "smooth" space
+
+   ParBilinearForm *a=new ParBilinearForm(&smooth_flux_fes);
+
+   ParLinearForm *Re_b=new ParLinearForm(&smooth_flux_fes);
+   ParLinearForm *Im_b=new ParLinearForm(&smooth_flux_fes);
+
+   VectorGridFunctionCoefficient Re_f(&Re_flux);
+   VectorGridFunctionCoefficient Im_f(&Im_flux);
+
+   if (Re_xfes->GetNE()) {
+      MFEM_VERIFY(smooth_flux_fes.GetFE(0) != NULL,
+                  "Could not obtain FE of smooth flux space.");
+
+      if (smooth_flux_fes.GetFE(0)->GetRangeType() == FiniteElement::SCALAR) {
+         VectorMassIntegrator *vmass=new VectorMassIntegrator;
+         vmass->SetVDim(smooth_flux_fes.GetVDim());
+         a->AddDomainIntegrator(vmass);
+
+         Re_b->AddDomainIntegrator(new VectorDomainLFIntegrator(Re_f));
+         Im_b->AddDomainIntegrator(new VectorDomainLFIntegrator(Im_f));
+      } else {
+         a->AddDomainIntegrator(new VectorFEMassIntegrator);
+
+         Re_b->AddDomainIntegrator(new VectorFEDomainLFIntegrator(Re_f));
+         Im_b->AddDomainIntegrator(new VectorFEDomainLFIntegrator(Im_f));
+      }
+   }
+
+   Re_b->Assemble();
+   Im_b->Assemble();
+   a->Assemble();
+   a->Finalize();
+
+   // The destination of the projected discontinuous flux
+   ParGridFunction smooth_flux(&smooth_flux_fes);
+   smooth_flux=0.0;
+
+   HypreParMatrix* Re_A=a->ParallelAssemble();
+   HypreParVector* Re_B=Re_b->ParallelAssemble();
+   HypreParVector* Im_B=Im_b->ParallelAssemble();
+
+   delete a;
+   delete Re_b;
+   delete Im_b;
+
+   // solve with Petsc
+
+   Mat A;
+   PetscInt sparseWidth;
+   hypre_getSparseWidth((hypre_ParCSRMatrix *) *Re_A,&sparseWidth);
+   if (hypre_ParCSRMatrixToMat((hypre_ParCSRMatrix *) *Re_A,&A,sparseWidth,1,0,1)) return true;
+   delete Re_A;
+
+   Vec b,x;
+   MatCreateVecs(A,&b,&x);
+   hypreParVectorToVec(Re_B,Im_B,&b);
+
+   KSP ksp;
+   PC pc;
+
+   ierr=KSPCreate(PETSC_COMM_WORLD, &ksp); if (ierr) return 12;
+   ierr=KSPSetType(ksp,KSPCG); if (ierr) return 13;
+   ierr=KSPSetOperators(ksp,A,A); if (ierr) return 14;
+   ierr=KSPGetPC(ksp,&pc); if (ierr) return 15;
+   ierr=PCSetType(pc,PCSOR); if (ierr) return 19;
+   ierr=PCFactorSetShiftType(pc,MAT_SHIFT_NONZERO); if (ierr) return 16;
+   ierr=KSPSetFromOptions(ksp); if (ierr) return 17;
+
+   PetscInt maxits;
+   PetscReal rtol,atol,dtol;
+   maxits=solver_max_it;                            // PETSc default = 1e4
+   rtol=solver_tol;                                 // PETSc default = 1e-5
+   //atol=projData->solution_3D_tolerance;          // PETSC default = 1e-50
+   atol=1e-50;                                      // PETSC default = 1e-50
+   dtol=1e5;                                        // PETSC default = 1e5
+   ierr=KSPSetTolerances(ksp,rtol,atol,dtol,maxits); if (ierr) return 18;
+
+   ierr=KSPSolve(ksp,b,x); if (ierr) return 24;
+
+   // get stats
+   KSPConvergedReason reason;
+   PetscReal rnorm;
+   ierr=KSPGetResidualNorm(ksp,&rnorm); if (ierr) return 25;
+   ierr=KSPGetConvergedReason(ksp,&reason); if (ierr) return 26;
+   ierr=KSPDestroy(&ksp); if (ierr) return 27;
+   if (reason < 0) fail=true;
+
+   // move x back onto ParFiniteElementSpace partitioning
+   vecToHypreParVector (&x,Re_B,Im_B);
+
+   // put on grid functions
+
+   ParGridFunction Re_smooth_flux(&smooth_flux_fes);
+   ParGridFunction Im_smooth_flux(&smooth_flux_fes);
+
+   Re_smooth_flux.Distribute(Re_B);
+   Im_smooth_flux.Distribute(Im_B);
+
+   delete Re_B;
+   delete Im_B;
+
+   // Proceed through the elements one by one, and find the Lp norm differences
+   // between the flux as computed per element and the flux projected onto the
+   // smooth_flux_fes space.
+   errors.SetSize(Re_xfes->GetNE());
+   i=0;
+   while (i < Re_xfes->GetNE()) {
+      errors(i)=sqrt(pow(ComputeElementLpDistance(norm_p,i,Re_smooth_flux,Re_flux),2)+
+                     pow(ComputeElementLpDistance(norm_p,i,Im_smooth_flux,Im_flux),2));
+      i++;
+   }
+
+   return fail;
+}
+
+
 // calculate the mesh errors using a Zienkiewicz-Zhu estimator
 //
 // Calculates the mesh errors on the H fields.  Since these are calculated from E, any error in E is magnified, and adaptive refinement
@@ -840,30 +1176,53 @@ bool fem3D::calculateMeshErrors (struct projectData *projData, BoundaryDatabase 
    double solution_tolerance=1e-12;
    double solution_tolerance_message_limit=1e-3;
    int iteration_limit=2000;
-   double ReFinalResidualNorm=0;
-   double ImFinalResidualNorm=0;
-   bool printError=false;
-   Vector ReLocalErrors,ImLocalErrors;
-   if (OPEM_L2ZZErrorEstimator(flux_integrator,*gridReH,smooth_flux_fes,flux_fes,ReLocalErrors,1,solution_tolerance,iteration_limit,ReFinalResidualNorm)) printError=true;
-   if (OPEM_L2ZZErrorEstimator(flux_integrator,*gridImH,smooth_flux_fes,flux_fes,ImLocalErrors,1,solution_tolerance,iteration_limit,ImFinalResidualNorm)) printError=true;
-   if (printError) {
-      if (ImFinalResidualNorm > ReFinalResidualNorm) ReFinalResidualNorm=ImFinalResidualNorm;
-      if (ReFinalResidualNorm > solution_tolerance_message_limit) {
-         prefix(); PetscPrintf (PETSC_COMM_WORLD,"            INFO: Calculated mesh errors are approximate with the final error of %g > the target of %g.\n",ReFinalResidualNorm,solution_tolerance_message_limit);
-      }
-   }
+   double norm_p=1;
+   Vector ReLocalErrors;
 
-   int i=0; 
-   while (i < ReLocalErrors.Size()) {
-      ReLocalErrors[i]=sqrt(ReLocalErrors[i]*ReLocalErrors[i]+ImLocalErrors[i]*ImLocalErrors[i]);
-      i++;
+   bool use_complex=false;
+   if (use_complex) {
+      double FinalResidualNorm=0;
+      bool printError=false;
+      if (OPEM_L2ZZErrorEstimator(flux_integrator,*gridReH,*gridImH,smooth_flux_fes,flux_fes,ReLocalErrors,norm_p,
+                                  solution_tolerance,iteration_limit,FinalResidualNorm)) printError=true;
+      if (printError) {
+         if (FinalResidualNorm > solution_tolerance_message_limit) {
+            prefix(); PetscPrintf (PETSC_COMM_WORLD,"            INFO: Calculated mesh errors are approximate with the final error of %g > the target of %g.\n",
+                                                     FinalResidualNorm,solution_tolerance_message_limit);
+         }
+      }
+   } else {
+      double ReFinalResidualNorm=0;
+      double ImFinalResidualNorm=0;
+      bool printError=false;
+      Vector ImLocalErrors;
+      int show_real_iterations=0;
+      int show_imag_iterations=0;
+      if (projData->output_show_iterations) {show_real_iterations=1; show_imag_iterations=2;}
+      if (OPEM_L2ZZErrorEstimator(flux_integrator,*gridReH,smooth_flux_fes,flux_fes,ReLocalErrors,norm_p,
+                                  solution_tolerance,iteration_limit,ReFinalResidualNorm,projData->debug_refine_preconditioner,show_real_iterations)) printError=true;
+      if (OPEM_L2ZZErrorEstimator(flux_integrator,*gridImH,smooth_flux_fes,flux_fes,ImLocalErrors,norm_p,
+                                  solution_tolerance,iteration_limit,ImFinalResidualNorm,projData->debug_refine_preconditioner,show_imag_iterations)) printError=true;
+      if (printError) {
+         if (ImFinalResidualNorm > ReFinalResidualNorm) ReFinalResidualNorm=ImFinalResidualNorm;
+         if (ReFinalResidualNorm > solution_tolerance_message_limit) {
+            prefix(); PetscPrintf (PETSC_COMM_WORLD,"            INFO: Calculated mesh errors are approximate with the final error of %g > the target of %g.\n",
+                                                     ReFinalResidualNorm,solution_tolerance_message_limit);
+         }
+      }
+
+      int i=0; 
+      while (i < ReLocalErrors.Size()) {
+         ReLocalErrors[i]=sqrt(ReLocalErrors[i]*ReLocalErrors[i]+ImLocalErrors[i]*ImLocalErrors[i]);
+         i++;
+      }
    }
 
    /* Does not work as well as with no scaling
    // scale the local errors by the longest element edge
    Array<int> vertices;
    real_t *coord1,*coord2;
-   i=0;
+   int i=0;
    while (i < (*pmesh)->GetNE()) {
       (*pmesh)->GetElementVertices(i,vertices);
       real_t maxLength=0;
@@ -899,7 +1258,7 @@ bool fem3D::calculateMeshErrors (struct projectData *projData, BoundaryDatabase 
    */
 
    // merge in the errors from the prior pass (i.e. different driven port) - keep the larger error
-   i=0;
+   int i=0;
    while (i < (int)errors.size()) {
       if (errors[i] > ReLocalErrors[elements[i]]) ReLocalErrors[elements[i]]=errors[i];
       i++;
@@ -1540,6 +1899,151 @@ PetscErrorCode fem3D::build_Mc_Ms (double referenceZ, BoundaryDatabase *boundary
    return ierr;
 }
 
+void fem3D::calculateRadiationCurrents (BoundaryDatabase *boundaryDatabase)
+{
+   // get the far-field wave impedance
+
+   wave_impedance=0;
+   Array<int> ess_bdr_rad;
+   ess_bdr_rad.SetSize((*pmesh)->bdr_attributes.Max());
+   ess_bdr_rad=0;       // disable all
+   long unsigned int j=0;
+   while (j < boundaryDatabase->get_boundaryListSize()) {
+      Boundary *boundary=boundaryDatabase->get_boundary(j);
+      if (boundary->is_radiation()) {
+         ess_bdr_rad[boundary->get_attribute()-1]=1;
+         wave_impedance=boundary->get_wave_impedance();  // already verified that all have the same wave impedance
+      }
+      j++;
+   }
+
+   if (wave_impedance == 0) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"fem3D::calculateRadiationCurrents: ASSERT: Cannot calculate radiation patterns since no radiation boundary conditions are defined.\n");
+      return;
+   }
+
+   // beta assuming relative permeability = 1
+   radiation_beta=2*M_PI*frequency*4e-7*M_PI/wave_impedance;
+
+   // wavelength assuming relative permeability = 1
+   double lambda=wave_impedance/(4e-7*M_PI*frequency);
+
+   // length of r
+   radius=1e5*lambda;
+
+   // mesh limits
+   Vector lowerLeft,upperRight;
+   (*pmesh)->GetBoundingBox(lowerLeft,upperRight,max(projData->mesh_order,1));
+
+   // find a center
+   Vector center(3);
+   center(0)=(lowerLeft(0)+upperRight(0))/2;
+   center(1)=(lowerLeft(1)+upperRight(1))/2;
+   center(2)=(lowerLeft(2)+upperRight(2))/2;
+
+   // surface currents on the radiation boundaries
+   boundaryDatabase->calculateRadiationCurrents(*pmesh,projData,center,radiation_beta,projData->antenna_plot_current_resolution,gridReE,gridImE,gridReH,gridImH);
+   boundaryDatabase->collectRadiationCurrents();
+}
+
+void fem3D::calculateRadiationPatterns (int Sport, complex<double> acceptedPower, int iteration, BoundaryDatabase *boundaryDatabase, PatternDatabase *patternDatabase)
+{
+   // mesh limits
+   Vector lowerLeft,upperRight;
+   (*pmesh)->GetBoundingBox(lowerLeft,upperRight,max(projData->mesh_order,1));
+
+   // find a center
+   Vector center(3);
+   center(0)=(lowerLeft(0)+upperRight(0))/2;
+   center(1)=(lowerLeft(1)+upperRight(1))/2;
+   center(2)=(lowerLeft(2)+upperRight(2))/2;
+
+   // increment around the circle
+   int nPoints=360/projData->antenna_plot_2D_resolution+0.5;
+
+   // cycle through the patterns
+   int i=0;
+   while (i < projData->inputAntennaPatternsCount) {
+
+      // convert inputs to strings
+      string quantity1="";
+      if (projData->inputAntennaPatterns[i].quantity1) quantity1=projData->inputAntennaPatterns[i].quantity1;
+      string quantity2="";
+      if (projData->inputAntennaPatterns[i].quantity2) quantity2=projData->inputAntennaPatterns[i].quantity2;
+      string plane="";
+      if (projData->inputAntennaPatterns[i].plane) plane=projData->inputAntennaPatterns[i].plane;
+
+      if (projData->inputAntennaPatterns[i].dim == 2) {
+
+         // get the fields on the circle
+         Circle *circle=new Circle();
+         circle->set_radius(radius);
+         circle->set_center(center(0),center(1),center(2));
+         circle->set_plane(plane);
+         circle->set_angles(projData->inputAntennaPatterns[i].theta,
+                            projData->inputAntennaPatterns[i].phi,
+                            projData->inputAntennaPatterns[i].latitude,
+                            projData->inputAntennaPatterns[i].rotation);
+         circle->set_nPoints(nPoints);
+
+        // see if this circle already exists
+        Circle *test=patternDatabase->get_circle(frequency,Sport,iteration,circle);
+        if (test) {
+           // re-use the existing data
+           delete circle;
+           circle=test;
+        } else {
+           // create the circle and compute the fields
+           circle->create();
+           boundaryDatabase->calculateFarField(radius,center,radiation_beta,wave_impedance,circle->get_pointList());
+        }
+
+         // save
+         patternDatabase->addPattern(frequency,Sport,iteration,acceptedPower,2,quantity1,quantity2,plane,
+                                     projData->inputAntennaPatterns[i].theta,projData->inputAntennaPatterns[i].phi,
+                                     projData->inputAntennaPatterns[i].latitude,projData->inputAntennaPatterns[i].rotation,
+                                     circle,nullptr);
+      } else {
+
+         // get the fields on the sphere
+
+         Sphere *sphere=new Sphere();
+         sphere->set_radius(radius);
+         sphere->set_center (center(0),center(1),center(2));
+
+         // see if this sphere already exists
+         Sphere *test=patternDatabase->get_sphere(frequency,Sport,iteration,sphere);
+         if (test) {
+            // re-use the existing data
+            delete sphere;
+            sphere=test;
+         } else {
+            sphere->create();
+            sphere->refine(projData->antenna_plot_3D_refinement);
+            sphere->findNeighbors();
+            //sphere->checkNeighbors();
+            sphere->setMetrics();
+            sphere->allocateAreasToPoints();
+            boundaryDatabase->calculateFarField(radius,center,radiation_beta,wave_impedance,sphere->get_pointList());
+         }
+
+         // save
+         patternDatabase->addPattern(frequency,Sport,iteration,acceptedPower,3,quantity1,quantity2,plane,0,0,0,0,nullptr,sphere);
+     }
+
+      i++;
+   }
+
+   patternDatabase->calculateTotalArea(frequency,iteration);
+   patternDatabase->populate_sphere(frequency,Sport,iteration);
+
+   patternDatabase->calculateRadiatedPower(frequency,iteration);
+   patternDatabase->calculateIsotropicGain(frequency,iteration);
+   patternDatabase->calculateDirectivity(frequency,iteration);
+   patternDatabase->calculateRadiationEfficiency(frequency,iteration);
+
+   boundaryDatabase->deleteRadiationCurrents ();
+}
 
 fem3D::~fem3D()
 {

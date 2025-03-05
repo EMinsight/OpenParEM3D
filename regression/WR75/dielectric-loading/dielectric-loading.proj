@@ -3,6 +3,7 @@
 project.save.fields            false
 
 mesh.file                      dielectric-loading.msh
+mesh.quality.limit             100
 
 mesh.order                     2
 
@@ -14,18 +15,19 @@ materials.local.path           ./
 materials.local.name           local_materials.txt
 materials.check.limits         true
 
-refinement.frequency           plan
+refinement.frequency           high
 refinement.iteration.min       1 
 refinement.iteration.max       30
 refinement.required.passes     1
-refinement.relative.tolerance  0.01
+refinement.relative.tolerance  0.001
 refinement.absolute.tolerance  1e-6
-refinement.variable            SandH
+refinement.variable            S
 
+//frequency.plan.linear          8e9,13e9,0.1e9
+//frequency.plan.linear          11.6e9,11.7e9,0.01e9
 frequency.plan.point           8.5e9
 frequency.plan.point           11.6e9
-frequency.plan.point.refine    12.5e9
-frequency.plan.point.refine    10e9
+frequency.plan.point           13e9
 
 reference.impedance            0
 //touchstone.format              MA

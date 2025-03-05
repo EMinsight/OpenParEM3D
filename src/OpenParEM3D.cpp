@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -106,7 +106,7 @@ void help () {
    PetscPrintf(PETSC_COMM_WORLD,"       -h          : Print this help text\n");
    PetscPrintf(PETSC_COMM_WORLD,"       filename    : Filename of an OpenParEM setup file.\n");
    PetscPrintf(PETSC_COMM_WORLD,"\nOpenParEM3D is a full-wave 3D electromagnetic solver.\n");
-   PetscPrintf(PETSC_COMM_WORLD,"Version 1.0.\n");
+   PetscPrintf(PETSC_COMM_WORLD,"Version 2.0.\n");
 }
 
 bool print_mesh_quality_message (ParMesh *pmesh, struct projectData *projData)
@@ -141,7 +141,8 @@ void isOpenParEM2Dreachable ()
    MPI_Barrier(PETSC_COMM_WORLD);
 }
 
-void load_project_file (const char *projFile, struct projectData *defaultData, struct projectData *projData, char *lockfile, chrono::system_clock::time_point job_start_time)
+void load_project_file (const char *projFile, struct projectData *defaultData, struct projectData *projData,
+                        char *lockfile, chrono::system_clock::time_point job_start_time)
 {
    prefix(); PetscPrintf(PETSC_COMM_WORLD,"   loading project file \"%s\"\n",projFile);
 
@@ -149,6 +150,7 @@ void load_project_file (const char *projFile, struct projectData *defaultData, s
    init_project (projData);
 
    if (load_project_file (projFile,projData,"   ")) {
+      MPI_Bcast (&(projData->debug_show_project),1,MPI_INT,0,PETSC_COMM_WORLD);
       if (projData->debug_show_project) {print_project (projData,defaultData,"      ");}
       exit_job_on_error (job_start_time,lockfile,true);
    }
@@ -165,14 +167,18 @@ void delete_stale_files (const char *baseName, int portCount)
       ss << ".s" << portCount << "p";
 
       delete_file(baseName,"","_results.csv");
+      delete_file(baseName,"","_FarField_results.csv");
+      delete_file(baseName,"","_FarField.csv");
       delete_file(baseName,"","_results.txt");
       delete_file(baseName,"","_iterations.txt");
-      delete_file(baseName,"","_protoype_test_cases.csv");
+      delete_file(baseName,"","_prototype_test_cases.csv");
       delete_file(baseName,"","_fields.csv");
       delete_file(baseName,"","_attributes.csv");
       delete_file(baseName,"",ss.str().c_str());
       delete_file(baseName,"temp_","");
       delete_file(baseName,"ParaView_","");
+      delete_file(baseName,"ParaView_","_FarField");
+      delete_file(baseName,"Report_","_FarField");
       delete_file(baseName,"ParaView_2D_port_","");
       delete_file(baseName,"ParaView_3D_port_","");
       delete_file(baseName,"ParaView_modal_2D_","");
@@ -212,8 +218,9 @@ int main(int argc, char *argv[])
    FrequencyPlan frequencyPlan;
    MeshMaterialList meshMaterials;
    MaterialDatabase materialDatabase;
-   vector<ParSubMesh> parSubMeshes;
+   vector<ParSubMesh> parSubMeshesPort;      // for ports
    ResultDatabase resultDatabase;
+   PatternDatabase patternDatabase;
    GammaDatabase gammaDatabase;
    vector<DifferentialPair *> aggregateList;
 
@@ -277,15 +284,26 @@ int main(int argc, char *argv[])
    reset_attributes(&mesh,nullptr,&meshMaterials);
 
    // boundaries
+
    if (boundaryDatabase.load(projData.port_definition_file,projData.solution_check_closed_loop)) exit_job_on_error (job_start_time,lockfile,true);
    if (boundaryDatabase.checkSportNumbering()) exit_job_on_error (job_start_time,lockfile,true);
    boundaryDatabase.assignAttributes(&mesh);
    if (boundaryDatabase.snapToMeshBoundary(&mesh)) exit_job_on_error (job_start_time,lockfile,true);
    if (boundaryDatabase.check_overlaps()) exit_job_on_error (job_start_time,lockfile,true);
+   if (boundaryDatabase.alignRadiationNormals()) exit_job_on_error (job_start_time,lockfile,true);
    boundaryDatabase.set2DModeNumbers();
    boundaryDatabase.aggregateDifferentialPairList(&aggregateList);
 
    boundaryDatabase.fillIntegrationPoints();
+
+   if (boundaryDatabase.hasRadiationBoundary() && projData.inputAntennaPatternsCount == 0) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"INFO: A radiation boundary is specified, but no antenna plot patterns are defined.\n");
+   }
+
+   if (!boundaryDatabase.hasRadiationBoundary() && projData.inputAntennaPatternsCount > 0) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3012: A radiation boundary is not specified, but an antenna plot pattern is defined.\n");
+      exit_job_on_error (job_start_time,lockfile,true);
+   }
 
    // clean up from any prior run
    delete_stale_files(baseName,boundaryDatabase.get_SportCount());
@@ -305,7 +323,7 @@ int main(int argc, char *argv[])
 
    // mesh and mesh materials consistency check
    if (mesh.attributes.Max() != meshMaterials.size()) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3012: Mesh file \"%s\" does not include the correct number of regions for material definitions.\n",projData.mesh_file);
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3068: Mesh file \"%s\" does not include the correct number of regions for material definitions.\n",projData.mesh_file);
       prefix(); PetscPrintf(PETSC_COMM_WORLD,"       The $PhysicalNames block should have %d entries, but only %d were found\n.",
                                            mesh.attributes.Max()+1,meshMaterials.size()+1);
       exit_job_on_error (job_start_time,lockfile,true);
@@ -431,12 +449,16 @@ int main(int argc, char *argv[])
          double shortestPerWavelength=-1;
          double longestPerWavelength=-1;
          get_edgeLengthsPerWavelength(pmesh,frequency,er,mur,&shortestPerWavelength,&longestPerWavelength);
-         prefix(); PetscPrintf(PETSC_COMM_WORLD,"      mesh edge length/wavelength in element: shortest=%g longest=%g\n",shortestPerWavelength,longestPerWavelength);
+         double global_shortestPerWavelength,global_longestPerWavelength;
+         MPI_Allreduce (&shortestPerWavelength,&global_shortestPerWavelength,1,MPI_DOUBLE,MPI_MIN,PETSC_COMM_WORLD);
+         MPI_Allreduce (&longestPerWavelength,&global_longestPerWavelength,1,MPI_DOUBLE,MPI_MAX,PETSC_COMM_WORLD);
+         prefix(); PetscPrintf(PETSC_COMM_WORLD,"      mesh edge length/wavelength in element: shortest=%g longest=%g\n",
+                                                global_shortestPerWavelength,global_longestPerWavelength);
 
          // solve the 2D ports
          prefix(); PetscPrintf(PETSC_COMM_WORLD,"      solving 2D ports ...\n");
 
-         if (boundaryDatabase.solve2Dports(pmesh,&parSubMeshes,&projData,frequency,&meshMaterials,&gammaDatabase)) {
+         if (boundaryDatabase.solve2Dports(pmesh,&parSubMeshesPort,&projData,frequency,&meshMaterials,&gammaDatabase)) {
             exit_job_on_error (job_start_time,lockfile,true);
          }
 
@@ -449,7 +471,7 @@ int main(int argc, char *argv[])
          fem->build_fe_spaces();
          fem->build_portEssTdofLists(&boundaryDatabase);
          boundaryDatabase.buildGrids(fem);
-         boundaryDatabase.save2DModalParaView(&parSubMeshes,&projData,frequency,false);
+         boundaryDatabase.save2DModalParaView(&parSubMeshesPort,&projData,frequency,false);
          boundaryDatabase.save3DParaView(pmesh,&projData,frequency,false);
          boundaryDatabase.createDrivingSets();
          boundaryDatabase.calculateLineIntegrals(pmesh,fem);
@@ -483,10 +505,15 @@ int main(int argc, char *argv[])
             result->set_sparseWidth(fem->get_sparseWidth());
 
             boundaryDatabase.transfer_3Dsolution_3Dgrids_to_2Dgrids(fem);
-            boundaryDatabase.save2DSolutionParaView(&parSubMeshes,&projData,frequency,drivingSet,false);
+            boundaryDatabase.save2DSolutionParaView(&parSubMeshesPort,&projData,frequency,drivingSet,false);
 
             prefix(); PetscPrintf(PETSC_COMM_WORLD,"         post-processing ...\n");
             boundaryDatabase.calculateSplits();
+            complex<double> acceptedPower=0;
+            if(boundaryDatabase.calculateAcceptedPower(drivingSet,&acceptedPower)) {
+               prefix(); PetscPrintf(PETSC_COMM_WORLD,"            ASSERT: failure in calculating accepted power\n");
+               exit_job_on_error (job_start_time,lockfile,true);
+            }
 
             chrono::system_clock::time_point solve_end_time=chrono::system_clock::now();
             result->set_solve_time(elapsed_time(solve_start_time,solve_end_time));
@@ -506,6 +533,17 @@ int main(int argc, char *argv[])
 
             if (saveFieldsHeader) {fem->saveFieldValuesHeader(&projData); saveFieldsHeader=false;}
             fem->saveFieldValues(&projData,pmesh,iteration,drivingSet);
+
+            chrono::system_clock::time_point radiation_start_time=chrono::system_clock::now();
+            if (projData.inputAntennaPatternsCount > 0) {
+               result->set_hasRadiation(true);
+               prefix(); PetscPrintf(PETSC_COMM_WORLD,"         radiation boundary currents ...\n");
+               fem->calculateRadiationCurrents(&boundaryDatabase);
+               prefix(); PetscPrintf(PETSC_COMM_WORLD,"         radiation patterns ...\n");
+               fem->calculateRadiationPatterns(drivingSet,acceptedPower,iteration,&boundaryDatabase,&patternDatabase);
+            }
+            chrono::system_clock::time_point radiation_end_time=chrono::system_clock::now();
+            result->set_radiation_time(elapsed_time(radiation_start_time,radiation_end_time));
 
             drivingSet++;
          }
@@ -593,9 +631,22 @@ int main(int argc, char *argv[])
          resultDatabase.saveCSV (&projData,&boundaryDatabase,&aggregateList,true);
          resultDatabase.saveTouchstone (&projData,&boundaryDatabase,&aggregateList);
 
+         // calculate antenna metrics
+         patternDatabase.calculateIsotropicGain(frequency,iteration);
+         patternDatabase.calculateDirectivity(frequency,iteration);
+         patternDatabase.calculateRadiationEfficiency(frequency,iteration);
+
+         patternDatabase.saveCSV(&projData,resultDatabase.get_unique_frequencies(),SportCount,true);
+         patternDatabase.saveParaView(&projData,frequency,iteration);
+         patternDatabase.save(&projData);
+
+         // clean up
          delete fem; fem=nullptr;
- 
          boundaryDatabase.reset();
+
+        // for benchmarking
+        //chrono::system_clock::time_point iteration_end_time=chrono::system_clock::now();
+        //if (rank == 0) cout << "CUMMULATIVETIME," << iteration+1 << "," << elapsed_time(job_start_time,iteration_end_time) << endl;
 
          ++iteration;
       }
@@ -610,7 +661,13 @@ int main(int argc, char *argv[])
    // save the results as test cases
    if (projData.test_create_cases) {
       prefix(); PetscPrintf(PETSC_COMM_WORLD,"Generating test cases ...\n");
-      resultDatabase.save_as_test(&projData);
+      int casenumber=0;
+
+      stringstream ssTests;
+      ssTests << projData.project_name << "_prototype_test_cases.csv";
+
+      resultDatabase.save_as_test(ssTests.str(),&projData,&casenumber);
+      patternDatabase.save_as_test(ssTests.str(),&projData,resultDatabase.get_SportCount(),&casenumber);
    }
 
    // print convergence status

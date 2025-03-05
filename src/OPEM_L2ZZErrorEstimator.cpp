@@ -15,13 +15,16 @@
 
 #include "OPEM_L2ZZErrorEstimator.hpp"
 
+extern "C" PetscErrorCode hypre_ParCSRMatrixToMat(hypre_ParCSRMatrix *, Mat *, PetscInt, int, int, int);
+extern "C" PetscErrorCode hypre_getSparseWidth (hypre_ParCSRMatrix *, PetscInt *);
+
 bool OPEM_L2ZZErrorEstimator(BilinearFormIntegrator &flux_integrator,
                              const ParGridFunction &x,
                              ParFiniteElementSpace &smooth_flux_fes,
                              ParFiniteElementSpace &flux_fes,
-                             Vector &errors,
-                             int norm_p, double solver_tol, int solver_max_it,
-                             double &finalResidualNorm)
+                             Vector &errors_norm, 
+                             double norm_p, double solver_tol, int solver_max_it,
+                             double &finalResidualNorm, int debug_refine_preconditioner, int show_iteration_count)
 {
    bool fail=false;
 
@@ -93,23 +96,26 @@ bool OPEM_L2ZZErrorEstimator(BilinearFormIntegrator &flux_integrator,
    delete a;
    delete b;
 
-   HypreDiagScale *diag = new HypreDiagScale(*A);
+   // solver
    HyprePCG *pcg = new HyprePCG(*A);
    pcg->SetTol(solver_tol);
    pcg->SetMaxIter(solver_max_it);
    pcg->SetPrintLevel(0);
-   pcg->SetPreconditioner(*diag);
-   pcg->Mult(*B, *X);
 
-   //The HypreBoomerAMG preconditioner is capable of a smaller residual at the expense of run time.
-   //HypreBoomerAMG *amg = new HypreBoomerAMG(*A);
-   //amg->SetPrintLevel(0);
-   //HyprePCG *pcg = new HyprePCG(*A);
-   //pcg->SetTol(solver_tol);
-   //pcg->SetMaxIter(solver_max_it);
-   //pcg->SetPrintLevel(0);
-   //pcg->SetPreconditioner(*amg);
-   //pcg->Mult(*B, *X);
+   // preconditioner
+   HypreDiagScale *diag=nullptr;
+   HypreILU *ilu=nullptr;
+   HypreBoomerAMG *boomer=nullptr;
+   if (debug_refine_preconditioner == 0) {diag=new HypreDiagScale(*A); pcg->SetPreconditioner(*diag);}
+   if (debug_refine_preconditioner == 1) {
+      boomer=new HypreBoomerAMG(*A);
+      boomer->SetRelaxType(6);
+      boomer->SetPrintLevel(0);
+      pcg->SetPreconditioner(*boomer);
+   }
+
+   // solve
+   pcg->Mult(*B, *X);
 
    // check for convergence
    int numIterations;
@@ -118,6 +124,14 @@ bool OPEM_L2ZZErrorEstimator(BilinearFormIntegrator &flux_integrator,
 
    pcg->GetFinalResidualNorm(finalResidualNorm);
 
+   if (show_iteration_count == 1) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"            real part number of iterations: %d\n",numIterations);
+   }
+
+   if (show_iteration_count == 2) {
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"            imaginary part number of iterations: %d\n",numIterations);
+   }
+
    // Extract the parallel grid function corresponding to the finite element
    // approximation X. This is the local solution on each processor.
    smooth_flux = *X;
@@ -125,19 +139,19 @@ bool OPEM_L2ZZErrorEstimator(BilinearFormIntegrator &flux_integrator,
    delete A;
    delete B;
    delete X;
-   delete diag;
-   //delete amg;
+   if (diag) {delete diag; diag=nullptr;}
+   if (ilu) {delete ilu; ilu=nullptr;}
+   if (boomer) {delete boomer; boomer=nullptr;}
    delete pcg;
 
    // Proceed through the elements one by one, and find the Lp norm differences
    // between the flux as computed per element and the flux projected onto the
    // smooth_flux_fes space.
    //double total_error = 0.0;
-   errors.SetSize(xfes->GetNE());
+   errors_norm.SetSize(xfes->GetNE());
    for (int i = 0; i < xfes->GetNE(); i++)
    {
-      errors(i) = ComputeElementLpDistance(norm_p, i, smooth_flux, flux);
-      //total_error += pow(errors(i), norm_p);
+      errors_norm(i) = ComputeElementLpDistance(norm_p, i, smooth_flux, flux);
    }
 
    //double glob_error;
@@ -147,3 +161,4 @@ bool OPEM_L2ZZErrorEstimator(BilinearFormIntegrator &flux_integrator,
    //return pow(glob_error, 1.0/norm_p);
    return fail;
 }
+

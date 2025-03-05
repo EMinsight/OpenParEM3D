@@ -18,7 +18,7 @@ refinement.iteration.max          50
 refinement.required.passes        1
 refinement.relative.tolerance     0.001
 refinement.absolute.tolerance     1e-7
-refinement.variable               SandH
+refinement.variable               SandE
 frequency.plan.linear             9e9,10e9,1e9
 reference.impedance               0
 touchstone.format                 DB

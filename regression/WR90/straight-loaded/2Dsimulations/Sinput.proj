@@ -1,6 +1,6 @@
 #OpenParEM2Dproject 1.0
 
-project.save.fields                      true
+project.save.fields                      false
 
 mesh.file                                Sinput_mesh2D.msh
 mesh.order                               7

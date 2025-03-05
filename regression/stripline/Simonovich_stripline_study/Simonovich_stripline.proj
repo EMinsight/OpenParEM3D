@@ -3,7 +3,7 @@
 project.save.fields               false
 mesh.file                         Simonovich_stripline.msh
 mesh.quality.limit                1e8
-mesh.refinement.fraction          0.0025
+mesh.refinement.fraction          0.002
 mesh.order                        2
 port.definition.file              Simonovich_stripline_ports.txt
 materials.global.path             
@@ -14,8 +14,8 @@ refinement.frequency              plan
 refinement.iteration.min          1
 refinement.iteration.max          50
 refinement.required.passes        1
-refinement.relative.tolerance     0.001
-refinement.absolute.tolerance     1e-07
+refinement.relative.tolerance     0.01
+refinement.absolute.tolerance     1e-8
 refinement.variable               SandH
 frequency.plan.point              0.3e9
 frequency.plan.linear             1e9,50e9,1e9

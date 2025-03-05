@@ -5,7 +5,6 @@ project.save.fields            false
 mesh.file                      straight.msh
 
 mesh.order                     3
-//mesh.refinement.fraction       0.0025
 mesh.quality.limit             1e6
 
 port.definition.file           straight_ports.txt
@@ -18,10 +17,10 @@ materials.check.limits         true
 
 refinement.frequency           high
 refinement.iteration.min       1 
-refinement.iteration.max       40
+refinement.iteration.max       1000
 refinement.required.passes     1
 refinement.relative.tolerance  0.1
-refinement.absolute.tolerance  1e-20
+refinement.absolute.tolerance  1e-30
 refinement.variable            SandH
 
 frequency.plan.point           9e9

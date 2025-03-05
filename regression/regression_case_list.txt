@@ -19,6 +19,10 @@
 
 ./permeability/partially_filled_rect_waveguide/part.proj 12
 
+./antenna/dipole/dipole.proj 12
+./antenna/patch/patch.proj 12
+./antenna/square_monopole/square-planar_12GHz.proj 12
+
 ./WR75/dielectric-loading/dielectric-loading.proj 12
 ./WR75/T-Junction/T-Junction.proj 12
 
@@ -28,8 +32,8 @@
 ./microstrip/bridge/bridge_3p78.proj 12
 
 ./WR90/tee/tee.proj 12
-./WR90/straight-adaptive-reuse/straight.proj 12
 ./WR90/straight-adaptive/straight.proj 12
+./WR90/straight-adaptive-reuse/straight.proj 12
 ./WR90/shorted-adaptive/shorted.proj 12
 ./WR90/shorted-adaptive/shorted_field.proj 12
 
@@ -124,6 +128,4 @@
 ./stripline/differential_pair_via_line_mixed/diffPair.proj 12
 ./stripline/differential_pair_via_line/diffPair.proj 12
 ./stripline/differential_pair_via_rot1_line_mixed/diffPair.proj 12
-
-./antenna/square_monopole/square-planar.proj 12
 

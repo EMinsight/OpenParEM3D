@@ -3,6 +3,7 @@
 project.save.fields            false
 
 mesh.file                      straight.msh
+mesh.save.refined              true
 
 mesh.order                     1
 mesh.quality.limit             1e9

@@ -1,7 +1,7 @@
 ///////////////////////////////////////////////////////////////////////////////////
 //                                                                               //
 //    process3D - processor for automation of regression testing of OpenParEM3D  //
-//    Copyright (C) 2024 Brian Young                                             //
+//    Copyright (C) 2025 Brian Young                                             //
 //                                                                               //
 //    This program is free software: you can redistribute it and/or modify       //
 //    it under the terms of the GNU General Public License as published by       //
@@ -46,9 +46,13 @@ class TestCase
    private:
       string name;
       double frequency;
+      bool type;                    // false for S-parameters; true for antenna metrics
       string testVariable;
-      int portOut;
-      int portIn;
+      int portOut;                  // S-parameters
+      int portIn;                   // S-parameters and antenna metrics
+      double gain;                  // antenna metrics
+      double directivity;
+      double radiationEfficiency;
       string testFunction;          // equal or threshold
       double expectedValue;
       double foundValue;
@@ -60,10 +64,14 @@ class TestCase
       long unsigned int index;  // for sorting
    public:
       void set_name (string name_) {name=name_;}
+      void set_type (bool type_) {type=type_;}
       void set_frequency (double frequency_) {frequency=frequency_;}
       void set_testVariable (string testVariable_) {testVariable=testVariable_;}
       void set_portOut (int portOut_) {portOut=portOut_;}
       void set_portIn (int portIn_) {portIn=portIn_;}
+      void set_gain (double gain_) {gain=gain_;}
+      void set_directivity (double directivity_) {directivity=directivity_;}
+      void set_radiationEfficiency (double radiationEfficiency_) {radiationEfficiency=radiationEfficiency_;}
       void set_testFunction (string testFunction_) {testFunction=testFunction_;}
       void set_expectedValue (double expectedValue_) {expectedValue=expectedValue_;}
       void set_threshold (double threshold_) {threshold=threshold_;}
@@ -74,7 +82,7 @@ class TestCase
       string get_testFunction () {return testFunction;}
       void print_as_testcase ();
       void printAllFormatted();
-      void evaluate (ResultDatabase *);
+      void evaluate (ResultDatabase *, PatternDatabase *);
       double get_error_or_tolerance();
       long unsigned int get_index() {return index;}
       void show_evaluation(ostream *);
@@ -88,11 +96,10 @@ class TestCaseDatabase
       bool load (const char *);
       void print_as_testcase ();
       void printAllFormatted ();
-      void evaluate (ResultDatabase *);
+      void evaluate (ResultDatabase *, PatternDatabase *);
       void sort(bool);
       void show_evaluation(ostream *);
 };
-
 
 #endif
 

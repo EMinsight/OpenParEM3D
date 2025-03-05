@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -168,7 +168,7 @@ PetscErrorCode hypre_extractRow (hypre_ParCSRMatrix *matrix, PetscInt row, Petsc
 // hypre_CSRMatrix defined at */hypre-2.22.0/src/seq_mv/csr_matrix.h
 //                routines at */hypre-2.22.0/src/seq_mv/csr_matrix.c
 // ReA or ImA can be passed as nullptr for a real- or imag- valued Mat
-PetscErrorCode hypre_ParCSRMatrixToMat(hypre_ParCSRMatrix *a, Mat *A, PetscInt sparseWidth, int create_A, int imaginary, int assemble)
+PetscErrorCode hypre_ParCSRMatrixToMat (hypre_ParCSRMatrix *a, Mat *A, PetscInt sparseWidth, int create_A, int imaginary, int assemble)
 {
    PetscErrorCode ierr=0;
    PetscInt i;

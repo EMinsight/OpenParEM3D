@@ -8,8 +8,8 @@ EndControl
 Strip
    name=Simonovich_stripline
    use_symmetry=false
-   left_side_gap=0.00486
-   right_side_gap=0.00486
+   left_side_gap=0.001  // 0.00486
+   right_side_gap=0.001 // 0.00486
    upper_thickness=0.000301
    upper_material=prepreg
    lower_thickness=0.0003048

@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -161,12 +161,14 @@ void Result::save (ostream *out, struct projectData *projData, int SportCount)
       *out << "   solve_time=" << get_solve_time() << endl;
       *out << "   mesh_refine_time=" << get_mesh_error_time() << endl;
       *out << "   refine_time=" << get_refine_time() << endl;
+      if (hasRadiation) *out << "   radiation_time=" << get_radiation_time() << endl;
 
       *out << "[EndResult]" << endl;
    }
 }
 
-void Result::saveFormatted (ostream *out, double solveElapsedTime, double meshErrorTime, double femSetupTime, double refineTime, double *priorFrequency)
+void Result::saveFormatted (ostream *out, double solveElapsedTime, double meshErrorTime, double femSetupTime,
+                            double refineTime, double radiationTime, double *priorFrequency)
 {
    int rank;
    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
@@ -187,7 +189,9 @@ void Result::saveFormatted (ostream *out, double solveElapsedTime, double meshEr
       if (refineTime > 0) *out << setw(12) << setprecision(4) << refineTime;
       else *out << setw(12) << "";
 
-      *out << setw(12) << setprecision(4) << solveElapsedTime+femSetupTime+meshErrorTime+refineTime;
+      if (hasRadiation) *out << setw(13) << setprecision(4) << radiationTime;
+
+      *out << setw(12) << setprecision(4) << solveElapsedTime+femSetupTime+meshErrorTime+refineTime+radiationTime;
 
       if (double_compare(frequency,*priorFrequency,1e-12)) *out << setw(17) << maxRelativeError;
       else  *out << setw(17) << "";
@@ -260,9 +264,11 @@ void Result::print ()
    cout << "   maxAbsoluteError=" << maxAbsoluteError << endl;
    cout << "   isRefined=" << isRefined << endl;
    cout << "   isConverged=" << isConverged << endl;
+   cout << "   hasRadiation=" << hasRadiation << endl;
    cout << "   solve_time=" << solve_time << endl;
    cout << "   fem_setup_time=" << fem_setup_time << endl;
    cout << "   refine_time=" << refine_time << endl;
+   cout << "   radiation_time=" << radiation_time << endl;
    cout << "   " << type << ":" << endl;
    MatView(*S,PETSC_VIEWER_STDOUT_WORLD);
 }
@@ -623,7 +629,7 @@ PetscErrorCode Result::SparameterConversion (BoundaryDatabase *boundaryDatabase,
 
 Result::~Result ()
 {
-//   MatDestroy(S);
+   if (S) {MatDestroy(S); S=nullptr;}
 }
 
 //---------------------------------------------------------------------------------------------------------------------------------
@@ -787,6 +793,12 @@ void ResultDatabase::set_refine_time (double elapsed, double frequency, int iter
    if (result) result->set_refine_time(elapsed);
 }
 
+void ResultDatabase::set_radiation_time (double elapsed, double frequency, int iteration)
+{
+   Result *result=get_Result(frequency,iteration);
+   if (result) result->set_radiation_time(elapsed);
+}
+
 bool ResultDatabase::hasRefinement ()
 {
    long unsigned int i=0;
@@ -828,6 +840,16 @@ bool ResultDatabase::isSequentialConverged (struct projectData *projData, double
    }
 
    return true;
+}
+
+bool ResultDatabase::get_hasRadiation ()
+{
+   long unsigned int i=0;
+   while (i < results.size()) {
+      if (results[i]->get_hasRadiation()) return true;
+      i++;
+   }
+   return false;
 }
 
 //ToDo: add error checking to ensure that the file wrote out completely
@@ -1389,6 +1411,8 @@ bool ResultDatabase::saveCSV (struct projectData *projData, BoundaryDatabase *bo
 
 void ResultDatabase::saveFormatted (ostream *out)
 {
+   bool hasRadiation=get_hasRadiation();
+
    *out << setw(15) << "---------------"
         << setw(12) << "------------"
         << setw(12) << "------------"
@@ -1396,8 +1420,9 @@ void ResultDatabase::saveFormatted (ostream *out)
         << setw(12) << "------------"
         << setw(12) << "------------"
         << setw(12) << "------------"
-        << setw(12) << "------------"
-        << setw(12) << "------------"
+        << setw(12) << "------------";
+   if (hasRadiation) *out << setw(13) << "-------------";
+   *out << setw(12) << "------------"
         << setw(17) << "-----------------"
         << setw(17) << "-----------------"
         << endl;
@@ -1409,10 +1434,11 @@ void ResultDatabase::saveFormatted (ostream *out)
         << setw(12) << "setup,s"
         << setw(12) << "solve,s"
         << setw(12) << "mesh err,s"
-        << setw(12) << "refine,s"
-        << setw(12) << "total,s"
+        << setw(12) << "refine,s";
+   if (hasRadiation) *out << setw(13) << "radiation,s";
+   *out << setw(12) << "total,s"
         << setw(17) << "relative S error"
-        << setw(17) << "absolute H error"
+        << setw(17) << "H error metric"
         << endl;
 
    *out << setw(15) << "---------------"
@@ -1422,21 +1448,23 @@ void ResultDatabase::saveFormatted (ostream *out)
         << setw(12) << "------------"
         << setw(12) << "------------"
         << setw(12) << "------------"
-        << setw(12) << "------------"
-        << setw(12) << "------------"
+        << setw(12) << "------------";
+   if (hasRadiation) *out << setw(13) << "-------------";
+   *out << setw(12) << "------------"
         << setw(17) << "-----------------"
         << setw(17) << "-----------------"
         << endl;
 
    double priorFrequency=-DBL_MAX;
-   double solveElapsed,meshError,femSetup,refine;
+   double solveElapsed,meshError,femSetup,refine,radiation;
    long unsigned int i=0;
    while (i < results.size()) {
       solveElapsed=results[i]->get_solve_time();
       femSetup=results[i]->get_fem_setup_time();
       refine=results[i]->get_refine_time();
       meshError=results[i]->get_mesh_error_time();
-      results[i]->saveFormatted(out,solveElapsed,meshError,femSetup,refine,&priorFrequency);
+      radiation=results[i]->get_radiation_time();
+      results[i]->saveFormatted(out,solveElapsed,meshError,femSetup,refine,radiation,&priorFrequency);
       i++;
    }
 }
@@ -1498,9 +1526,8 @@ void ResultDatabase::print ()
    }
 }
 
-bool ResultDatabase::save_as_test (struct projectData *projData)
+bool ResultDatabase::save_as_test (string testFilename,struct projectData *projData, int *casenumber)
 {
-
    PetscMPIInt rank,size;
    MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
    MPI_Comm_size(PETSC_COMM_WORLD, &size);
@@ -1508,16 +1535,8 @@ bool ResultDatabase::save_as_test (struct projectData *projData)
    int isFail=0;
    ofstream out;
 
-   stringstream ssTests;
-   ssTests << projData->project_name << "_prototype_test_cases.csv";
-
-   int casenumber=0;
-
-   stringstream ss;
-   ss << projData->project_name << "_results.csv";
-
    if (rank == 0) {
-      out.open(ssTests.str().c_str(),ofstream::out);
+      out.open(testFilename.c_str(),ofstream::app);
       if (!out.is_open()) isFail=1;
 
       int k=1;
@@ -1530,7 +1549,7 @@ bool ResultDatabase::save_as_test (struct projectData *projData)
    }
 
    if (isFail) {
-      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3101: Failed to open file \"%s\" for writing.\n",ss.str().c_str());
+      prefix(); PetscPrintf(PETSC_COMM_WORLD,"ERROR3101: Failed to open file \"%s\" for writing.\n",testFilename.c_str());
       return true;
    }
 
@@ -1539,7 +1558,7 @@ bool ResultDatabase::save_as_test (struct projectData *projData)
    long unsigned int i=0;
    while (i < unique_frequencies.size()) {
       Result *result=this->get_Result(unique_frequencies[i]);  // gets the active result
-      if (result) result->save_as_test (&out, projData->project_name, i, &casenumber);
+      if (result) result->save_as_test (&out, projData->project_name,i,casenumber);
       else {prefix(); PetscPrintf(PETSC_COMM_WORLD,"ASSERT: Failed to find a result at frequency %g.\n",unique_frequencies[i]);}
       i++;
    }
@@ -1597,13 +1616,15 @@ bool ResultDatabase::loadCSV (const char *filename)
    if (CSV.is_open()) {
       string line;
       while (getline(CSV,line)) {
-         Result *newResult=new Result();
-         newResult->set_type_S();
-         newResult->set_active();
-         if (newResult->extractS (line,frequency_unit,SportCount)) {
-            delete newResult;
-         } else {
-            results.push_back(newResult);
+         if (line.length() != 0 && line[0] != '#') {
+            Result *newResult=new Result();
+            newResult->set_type_S();
+            newResult->set_active();
+            if (newResult->extractS (line,frequency_unit,SportCount)) {
+               delete newResult;
+            } else {
+               results.push_back(newResult);
+            }
          }
       }
       CSV.close();

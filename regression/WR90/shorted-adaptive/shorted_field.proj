@@ -19,7 +19,7 @@ refinement.iteration.min       1
 refinement.iteration.max       50
 refinement.required.passes     1
 refinement.relative.tolerance  1e-12
-refinement.absolute.tolerance  1e-7
+refinement.absolute.tolerance  1e-6
 refinement.variable            SorH
 
 frequency.plan.point.refine    9e9

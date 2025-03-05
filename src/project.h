@@ -1,7 +1,7 @@
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
 //    OpenParEM3D - A fullwave 3D electromagnetic simulator.                  //
-//    Copyright (C) 2024 Brian Young                                          //
+//    Copyright (C) 2025 Brian Young                                          //
 //                                                                            //
 //    This program is free software: you can redistribute it and/or modify    //
 //    it under the terms of the GNU General Public License as published by    //
@@ -35,6 +35,15 @@ char* removeNewLineChar (char *);
 char *removeComment (char *);
 int removeQuote (char *);
 void removeQuotes (char *);
+
+struct inputAntennaPattern {
+   int lineNumber;
+   int dim;
+   char *quantity1;
+   char *quantity2;
+   char *plane;
+   double theta,phi,latitude,rotation;
+};
 
 struct projectData {
    char* version_name;       // set in init_project 
@@ -92,6 +101,21 @@ struct projectData {
    int solution_use_initial_guess;
    double solution_shift_factor;
 
+   int inputAntennaPatternsCount;
+   int inputAntennaPatternsAllocated;
+   struct inputAntennaPattern *inputAntennaPatterns;
+
+   double antenna_plot_current_resolution;
+   double antenna_plot_2D_range;
+   double antenna_plot_2D_interval;
+   double antenna_plot_2D_resolution;
+   int antenna_plot_2D_annotations;
+   int antenna_plot_2D_save;
+   int antenna_plot_3D_refinement;
+   int antenna_plot_3D_sphere;
+   int antenna_plot_3D_save;
+   int antenna_plot_raw_save;
+
    int output_show_refining_mesh;
    int output_show_postprocessing;
    int output_show_iterations;
@@ -110,6 +134,7 @@ struct projectData {
    int debug_skip_mixed_conversion;
    int debug_skip_forced_reciprocity;
    int debug_tempfiles_keep;
+   int debug_refine_preconditioner;
 
    int field_points_count;
    int field_points_allocated;
