@@ -31,6 +31,7 @@ frequency.plan.point           5.8e9
 antenna.plot.3D.pattern        q=G
 antenna.plot.3D.pattern        q=Etheta
 antenna.plot.3D.pattern        q=Ephi
+antenna.plot.2D.pattern        q1=G,plane=xz,rotation=180
 antenna.plot.2D.pattern        q1=Etheta,q2=Ephi,plane=xz
 antenna.plot.2D.pattern        q1=Etheta,q2=Ephi,theta=90,phi=-45
 antenna.plot.2D.pattern        q1=Etheta,q2=Ephi,plane=xy,latitude=63
